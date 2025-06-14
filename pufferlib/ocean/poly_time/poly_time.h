@@ -10,6 +10,7 @@ An Env for learning polynomial time oracles in Pufferlib.
 #include <limits.h>
 #include <float.h>
 #include <time.h>
+#include<stdint.h>
 #include "raylib.h"
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
@@ -81,7 +82,9 @@ struct PolyTime {
     results[0 - max_items;] - allocation
     results[max_items;] - halt flag (0 or 1)
     */
-    unsigned int* results;
+    float* results;
+
+    unsigned char halt;
 
     int *precomputed_us;
     int *precomputed_um;
@@ -104,10 +107,12 @@ void copy_bits_f_ui(const float* src, unsigned int* dst, size_t count)
     memcpy(dst, src, count * sizeof(float));
 }
 
+static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi: v; }
+
 void init(PolyTime* env) {
     env->problem = (unsigned int*)calloc(2 + env->max_agents * env->max_items, sizeof(unsigned int));
     env->tape = (float*)calloc(env->tape_size, sizeof(float));
-    env->results = (unsigned int*)calloc(env->max_items + 1, sizeof(unsigned int));
+    env->results = (float*)calloc(env->max_items, sizeof(float));
     env->returns = (float*)calloc(1, sizeof(float));
     env->utility = env->problem + 2;
 
@@ -158,28 +163,36 @@ void compute_observations(PolyTime* env) {
     obs_index += env->tape_size;
 
     // Results allocation
-    copy_bits_ui_f(env->results, env->observations + obs_index, env->max_items);
+    memcpy(env->observations + obs_index,env->results,env->max_items * sizeof(float));
     obs_index += env->max_items;
 
     // Halt flag
-    env->observations[obs_index++] = env->results[env->max_items] ? 1.0f : 0.0f;
+    env->observations[obs_index++] = env->halt? 1.0f : 0.0f;
 }
 
 void c_reset(PolyTime* env) {
+    
+    uint32_t fast_hash = (uint32_t)env->tick;
+    fast_hash ^= (uint32_t)(uintptr_t)env;
+    fast_hash ^= (uint32_t)clock();
+    fast_hash ^= (uint32_t)time(NULL);
+    srand(fast_hash);
+
     env->tick = 0;
     memset(env->observations, 0, (2 + env->max_agents * env->max_items + env->tape_size +
                     env->max_items + 1) * sizeof(float));
 
     memset(env->actions, 0, (env->tape_size + env->max_items + 1) * sizeof(float));
-    memset(env->rewards, 0, 1 * sizeof(float));
-    memset(env->terminals, 0, 1 * sizeof(unsigned char));
+    env->returns[0] = 0.0f;
+
+    memset(env->precomputed_um,  0, env->max_agents * env->max_agents * sizeof(int));
+    memset(env->precomputed_us,  0, env->max_agents * env->max_agents * sizeof(int));
 
     //Generate a new problem instance
-    srand((unsigned int)time(NULL));
+    /* at the top of main() or vec_init() once per process */
 
-
-    env->num_agents = rand() % (env->max_agents) + 1;
-    env->num_items = rand() % (env->max_items) + 1;
+    env->num_agents = rand() % (env->max_agents-1) + 2;
+    env->num_items = rand() % (env->max_items - 1) + 2;
 
 
     env->problem[0] = env->num_agents;
@@ -192,7 +205,17 @@ void c_reset(PolyTime* env) {
 
     memset(env->tape, 0, env->tape_size * sizeof(float));
 
-    memset(env->results, 0, (env->max_items + 1) * sizeof(unsigned int));
+    memset(env->results, 0, (env->max_items) * sizeof(float));
+
+    env->halt = 0;
+
+    for (int i = 0; i < env->num_agents; i++)
+    {
+        for (int j = 0; j < env->num_agents; j++)
+        {
+            env->precomputed_um[i * env->max_agents + j] = INT_MAX;
+        }
+    }
 
     compute_observations(env);
 }
@@ -203,16 +226,24 @@ void c_step(PolyTime* env){
 
     env->rewards[0] = -env->nen_halt_penalty;
 
+    for (int k = 0; k < env->tape_size + env->max_items + 1; ++k)
+    {
+        float a = env->actions[k];
+        if (!isfinite(a) || a < -1.0001f || a > 1.0001f)
+            a = 0.f;
+        env->actions[k] = fminf(fmaxf(a, -1.f), 1.f);
+    }
+
     // Process actions s_t -> s_t+1
     memcpy(env->tape, env->actions, env->tape_size * sizeof(float));
 
-    copy_bits_f_ui(env->actions + env->tape_size, env->results, env->max_items);
-    // Allocation TODO ? data type ?
+    memcpy(env->results, env->actions + env->tape_size,env->max_items * sizeof(float));
+        // Allocation TODO ? data type ?
 
-    env->results[env->max_items] = (unsigned int)env->actions[env->tape_size + env->max_items]; // Halt flag
+    env->halt = env->actions[env->tape_size + env->max_items] > 0 ? 1 : 0;
+    env->terminals = env->halt;
 
-
-    if (env->results[env->max_items]) {
+    if (env->halt) {
 
         bool res = check_soln_correctness(env);
 
@@ -233,36 +264,28 @@ void c_step(PolyTime* env){
         env->log.running_time += (float)env->tick; // Running time metric
         env->log.correctness += res ? 1.0f : 0.0f; // Correctness metric
 
-
-        env->terminals[0] = 1;
         c_reset(env);
     } 
     else
     {
         env->returns[0] += env->rewards[0];
-        compute_observations(env);
     }
 
+    compute_observations(env);
 }
 
 bool check_soln_correctness(PolyTime* env) {
     // checks if the allocation if EFX
 
     for (int i = 0; i < env->num_agents; i++) {
-        for (int j = 0; j < env->num_agents; j++) {
-            env->precomputed_um[i * env->max_agents + j] = INT_MAX;
-        }
-    }
-
-    for (int i = 0; i < env->num_agents; i++) {
         for (int j = 0; j < env->num_items; j++){
-            if (env->results[j] >= env->num_agents) {
-                // Invalid allocation
-                return false;
-            }
-            env->precomputed_us[i * env->max_agents + env->results[j]] += env->utility[env->max_items * i + j];
 
-            env->precomputed_um[i * env->max_agents + env->results[j]] = min(env->precomputed_um[i * env->max_agents + env->results[j]], env->utility[env->max_items * i + j]);
+            int id = (int)lrintf((env->results[j] + 1.f) * 0.5f * (env->num_agents - 1));
+            id = clampi(id, 0, env->num_agents - 1);
+
+            env->precomputed_us[i * env->max_agents + id] += env->utility[env->max_items * i + j];
+
+            env->precomputed_um[i * env->max_agents + id] = min(env->precomputed_um[i * env->max_agents + id], env->utility[env->max_items * i + j]);
         }
     }
 
