@@ -4,12 +4,11 @@ import numpy as np
 import pufferlib
 from pufferlib.ocean.poly_time import binding
 
-FLT_MAX = np.finfo(np.float32).max
 
 class PolyTime(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode=None, log_interval=128, nen_halt_penalty=1.0,
-            correctness_reward=10.0, incorrectness_penalty=5.0, max_agents=50, max_items=500,
-            tape_size=1024, max_utility=50, buf=None, seed=0):
+    def __init__(self, num_envs=1, render_mode=None, log_interval=10, nen_halt_penalty=1.0,
+            correctness_reward=10.0, incorrectness_penalty=10.0, max_agents=50, max_items=50,
+            tape_size=124, max_utility=50, buf=None, seed=0):
 
         if not isinstance(max_agents, int) or max_agents <= 0:
             raise ValueError("max_agents must be an integer greater than 0.")
@@ -43,35 +42,48 @@ class PolyTime(pufferlib.PufferEnv):
         self.log_interval = log_interval
 
         self.single_observation_space = gymnasium.spaces.Box(
-            low=-FLT_MAX,
-            high=FLT_MAX,
+            low=-np.inf,
+            high=np.inf,
             shape=(self.num_obs,),
             dtype=np.float32
         )
         
         self.single_action_space = gymnasium.spaces.Box(
-            low=-FLT_MAX,
-            high=FLT_MAX,
+            low=-1,
+            high=1,
             shape=(self.num_actions,),
             dtype=np.float32
         )
 
         super().__init__(buf)
 
-        self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
-                                       self.terminals, self.truncations, num_envs, seed, nen_halt_penalty=nen_halt_penalty,
-                                       correctness_reward=correctness_reward,
-                                       incorrectness_penalty=incorrectness_penalty,
-                                       max_agents=self.max_agents, max_items=self.max_items,
-                                       tape_size=self.tape_size, max_utility=self.max_utility)
+        self.c_envs = binding.vec_init(
+            self.observations,
+            self.actions,
+            self.rewards,
+            self.terminals,
+            self.truncations,
+            num_envs,
+            seed,
+            nen_halt_penalty=nen_halt_penalty,
+            correctness_reward=correctness_reward,
+            incorrectness_penalty=incorrectness_penalty,
+            max_agents=self.max_agents,
+            max_items=self.max_items,
+            tape_size=self.tape_size,
+            max_utility=self.max_utility
+        )
         
     def reset(self, seed=None):
-        binding.vec_reset(self.c_envs, seed)
-        self.tick = 0
+        self.tick = 0      
+        if seed is None:
+            binding.vec_reset(self.c_envs, 0)
+        else:
+            binding.vec_reset(self.c_envs, seed)
         return self.observations, []
         
     def step(self, actions):
-        self.actions[:] = actions
+        self.actions[:] = np.clip(actions.flatten(), -1.0, 1.0)
         binding.vec_step(self.c_envs)
         self.tick += 1
         info = []
