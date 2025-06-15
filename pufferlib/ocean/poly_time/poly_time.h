@@ -158,7 +158,7 @@ void compute_observations(PolyTime* env) {
     copy_bits_ui_f(env->utility, env->observations + obs_index, env->max_agents * env->max_items);
     obs_index += env->max_agents * env->max_items;
 
-    // Memory tape TODO: idk if I should normalize this
+    // Memory tape
     memcpy(env->observations + obs_index, env->tape, env->tape_size * sizeof(float));
     obs_index += env->tape_size;
 
@@ -191,7 +191,7 @@ void c_reset(PolyTime* env) {
     //Generate a new problem instance
     /* at the top of main() or vec_init() once per process */
 
-    env->num_agents = rand() % (env->max_agents-1) + 2;
+    env->num_agents = 4;
     env->num_items = rand() % (env->max_items - 1) + 2;
 
 
@@ -263,6 +263,8 @@ void c_step(PolyTime* env){
 
         env->log.running_time += (float)env->tick; // Running time metric
         env->log.correctness += res ? 1.0f : 0.0f; // Correctness metric
+        env->log.n += 1.0f;
+        //printf("reached halt!!");
 
         c_reset(env);
     } 
