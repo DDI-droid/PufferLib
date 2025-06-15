@@ -6,8 +6,8 @@ from pufferlib.ocean.poly_time import binding
 
 
 class PolyTime(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode=None, log_interval=10, nen_halt_penalty=1.0,
-            correctness_reward=10.0, incorrectness_penalty=10.0, max_agents=50, max_items=50,
+    def __init__(self, num_envs=1, render_mode=None, log_interval=1, nen_halt_penalty=1.0,
+            correctness_reward=10.0, incorrectness_penalty=10.0, max_agents=4, max_items=50,
             tape_size=124, max_utility=50, buf=None, seed=0):
 
         if not isinstance(max_agents, int) or max_agents <= 0:
@@ -83,7 +83,7 @@ class PolyTime(pufferlib.PufferEnv):
         return self.observations, []
         
     def step(self, actions):
-        self.actions[:] = np.clip(actions.flatten(), -1.0, 1.0)
+        self.actions[:] = np.clip(actions, -1.0, 1.0)
         binding.vec_step(self.c_envs)
         self.tick += 1
         info = []
