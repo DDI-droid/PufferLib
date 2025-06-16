@@ -147,7 +147,6 @@ MAKE_FUNCTIONS = {
     'impulse_wars': 'ImpulseWars',
     'gpudrive': 'GPUDrive',
     'pacman': 'Pacman',
-    'poly_time': 'PolyTime',
     'table_transformer': 'TableTransformer',
     'spaces': make_spaces,
     'multiagent': make_multiagent,
