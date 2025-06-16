@@ -20,6 +20,10 @@ import numpy as np
 
 import einops
 
+import transformers
+from PIL import Image
+import torchvision.transforms as T
+
 class Boids(nn.Module):
     def __init__(self, env, cnn_channels=32, hidden_size=128, **kwargs):
         super().__init__()
@@ -986,5 +990,134 @@ class PolyTime(nn.Module):
         action = Normal(action_mean, action_std)
 
         value = self.value_fn(hidden)
+
+        return action, value
+
+class TableTransformer(nn.Module):
+    def __init__(
+        self,
+        env,
+        base_ckpt='microsoft/table-transformer-structure-recognition-v1.1-all',
+        device='cuda',
+        image_path='/media/user/EXT_DRIVE/Anshul/Ocean/pufferlib/pufferlib/resources/table_transformer/table_structure.jpg',
+        **kwargs
+    ):
+        super().__init__()
+
+        self.device = torch.device(device)
+
+        self.detector = (
+            transformers.TableTransformerForObjectDetection
+            .from_pretrained(base_ckpt)
+            .to(self.device)
+        )
+        self.detector.train(True)
+
+        self.img_processor = transformers.AutoImageProcessor.from_pretrained(base_ckpt, use_fast=True)
+        self.img_processor.size = {"shortest_edge": 800, "longest_edge": 800}
+
+        for param in self.detector.parameters():
+            param.requires_grad_(True)
+
+        self.d_model = self.detector.config.hidden_size
+        self.num_queries = self.detector.config.num_queries
+
+        self.actor_mean = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.num_queries * self.d_model, env.single_action_space.shape[0]), std=0.01)
+        )
+        
+        self.actor_logstd = nn.Parameter(torch.ones(1, env.single_action_space.shape[0]))
+         
+        self.value_fn = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.num_queries * self.d_model, 1),std=1.0)
+        )
+
+
+        self.img = Image.open(image_path).convert('RGB')
+        # transform = T.Compose([
+        #     T.Resize((800, 800)),
+        #     T.ToTensor()
+        # ])
+        self.img_enc = self.img_processor(images=self.img, return_tensors="pt")
+        self.img = self.img_enc.pixel_values.to(self.device) / 255.0
+
+        self.mask = torch.ones((self.img.shape[0], self.img.shape[2], self.img.shape[3]), dtype=torch.bool, device=self.img.device)
+
+        # self.img = transform(self.img).unsqueeze(0).to(self.device)
+
+    def forward(self, observations: torch.Tensor, state=None) -> torch.Tensor:
+        hidden = self.encode_observations(observations)
+        probs, value = self.decode_actions(hidden)
+
+        return probs, value
+
+    def forward_train(self, observation: torch.Tensor, state=None) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden = self.encode_observations(observation)
+        probs, value = self.decode_actions(hidden)
+
+        return probs, value
+
+    def forward_eval(self, observation: torch.Tensor, state=None) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden = self.encode_observations(observation)
+        probs, value = self.decode_actions(hidden)
+
+        return probs, value
+
+    def encode_observations(self, observations: torch.Tensor, state=None) -> torch.Tensor:
+
+        outs = self.detector(
+            pixel_values=self.img, pixel_mask=self.mask,
+            output_hidden_states=True
+        )
+
+
+        # boxes = outs.pred_boxes  # shape: [B, num_queries, 4]
+        # logits = outs.logits     # shape: [B, num_queries, num_classes]
+
+        # labels = torch.argmax(logits, dim=-1).unsqueeze(-1).float()
+
+        h_state = outs.decoder_hidden_states[-1]  # shape: [B, num_queries, d_model]
+
+        # h_state = torch.nan_to_num(h_state, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # h_state += 1e-6 * torch.randn_like(h_state)
+
+        # print("h!", h_state)
+
+        hidden = h_state # shape: [B, num_queries, d_model]
+
+
+
+        hidden = einops.repeat(
+            hidden, 'b q d -> (repeat b) q d', repeat=observations.shape[0]
+        )
+
+        hidden = einops.rearrange(hidden, 'b q d -> b (q d)')
+
+        return hidden # shape: [B, num_queries * d_model]
+
+
+
+    def decode_actions(self, hidden: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # print("h", hidden)
+
+        action_mean = self.actor_mean(hidden)
+        action_mean = torch.where(torch.isnan(action_mean), torch.zeros_like(action_mean), action_mean)
+
+
+        logstd = self.actor_logstd.expand_as(action_mean)
+
+        action_std = torch.exp(logstd)
+        action_std = action_std.clamp(min=1e-6)
+        action_std=  action_std.clamp(max=5.0)
+        
+        action_std = torch.where(torch.isnan(action_std), torch.ones_like(action_std), action_std)
+        
+        action = Normal(action_mean, action_std)
+
+
+        value = self.value_fn(hidden)
+        value = torch.where(torch.isnan(value), torch.zeros_like(value), value)
+
 
         return action, value
