@@ -988,3 +988,60 @@ class PolyTime(nn.Module):
         value = self.value_fn(hidden)
 
         return action, value
+
+class PolyTMLSTM(pufferlib.models.LSTMWrapper):
+    def __init__(self, env, policy, input_size = 256, hidden_size = 256):
+        super().__init__(env, policy, input_size, hidden_size)    
+
+class PolyTM(nn.Module):
+    def __init__(
+        self, 
+        env, 
+        hidden_size=256,
+        **kwargs
+    ):
+        super().__init__()
+        
+        self.hidden_size = hidden_size
+        
+        self.is_continuous = False
+        
+        self.num_observations = env.num_obs
+
+
+        self.proj = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.num_observations, hidden_size)),
+            nn.ReLU(),
+        )
+
+
+        self.atn_dim = env.single_action_space.nvec.tolist()
+        self.actor = pufferlib.pytorch.layer_init(nn.Linear(hidden_size, sum(self.atn_dim)), std=0.01)
+
+
+        self.value_fn = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=0.01),
+            nn.ReLU(),
+        )
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations) 
+        actions, value = self.decode_actions(hidden)
+        
+        return actions, value
+
+    def forward_train(self, x, state=None):
+        return self.forward(x, state)
+
+    def encode_observations(self, observations, state=None):
+        features = self.proj(observations.float())
+        
+        return features
+
+    def decode_actions(self, hidden):
+        action = self.actor(hidden)
+        action = torch.split(action, self.atn_dim, dim=1)
+        
+        value = self.value_fn(hidden)
+        
+        return action, value
