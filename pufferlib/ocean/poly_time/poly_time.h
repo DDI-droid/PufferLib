@@ -241,7 +241,7 @@ void c_step(PolyTime* env){
         // Allocation TODO ? data type ?
 
     env->halt = env->actions[env->tape_size + env->max_items] > 0 ? 1 : 0;
-    env->terminals = env->halt;
+    env->terminals[0] = env->halt;
 
     if (env->halt) {
 
