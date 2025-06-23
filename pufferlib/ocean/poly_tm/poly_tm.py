@@ -6,34 +6,45 @@ from pufferlib.ocean.poly_tm import binding
 
 
 class PolyTM(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode="auto", log_interval=1, nen_halt_penalty=1.0,
+    def __init__(self, num_envs=1, render_mode="auto", log_interval=1, log_episodes=10, nen_halt_penalty=1.0,
             correctness_reward=10.0, incorrectness_penalty=10.0, tape_size=512,
             observation_window=16, work_alphabet=256,
-            state_alphabet=256, move_state=10, move_work=10,
+            state_alphabet=256, move_state=10, move_work=10, max_steps = 300,
             max_a=4, max_i=50, max_u=50, buf=None, seed=0):
 
         self.tape_size = tape_size
-        self.observation_window = observation_window
+        self.observation_window = int(observation_window)
         
-        self.work_alphabet = work_alphabet
-        self.state_alphabet = state_alphabet
+        self.work_alphabet = int(work_alphabet)
+        self.state_alphabet = int(state_alphabet)
         self.move_work = move_work
         self.move_state = move_state
+        
+        # print(f"PolyTM: tape_size={tape_size}, observation_window={observation_window}, "
+        #       f"work_alphabet={work_alphabet}, state_alphabet={state_alphabet}, "
+        #       f"move_work={move_work}, move_state={move_state}, "
+        #       f"nen_halt_penalty={nen_halt_penalty}, correctness_reward={correctness_reward}, "
+        #       f"incorrectness_penalty={incorrectness_penalty}")
 
         
         self.max_a = max_a
         self.max_i = max_i
         self.max_u = max_u
         
-        self.num_obs = 2 * self.observation_window + 1 + 2*self.observation_window+ 1 + 1
+        self.num_obs = 2 * self.observation_window + 1 + 2*self.observation_window+ 1
 
-        self.num_actions = 5
+        self.num_actions = 4
+        
+        self.log_idx = 0
 
         
         self.num_agents = num_envs
         self.render_mode = render_mode
         
         self.log_interval = log_interval
+        self.log_episodes = log_episodes
+        
+        self.max_steps = max_steps
 
         self.single_observation_space = gymnasium.spaces.Box(
             low=0,
@@ -43,7 +54,7 @@ class PolyTM(pufferlib.PufferEnv):
         )
         
         self.single_action_space = gymnasium.spaces.MultiDiscrete(
-            [self.work_alphabet, 2 * self.move_work + 1, self.state_alphabet, 2 * self.move_state + 1, self.state_alphabet],
+            [self.work_alphabet, 2 * self.move_work + 1, self.state_alphabet, 2 * self.move_state + 1],
             dtype=np.int32
         )
 
@@ -66,6 +77,7 @@ class PolyTM(pufferlib.PufferEnv):
             state_alphabet=self.state_alphabet,
             move_work=self.move_work,
             move_state=self.move_state,
+            max_steps=self.max_steps,
             max_a=self.max_a,
             max_i=self.max_i,
             max_u=self.max_u,
@@ -86,10 +98,12 @@ class PolyTM(pufferlib.PufferEnv):
         binding.vec_step(self.c_envs)
         
         info = []
-        if self.tick % self.log_interval == 0:
+        if sum(self.terminals) >= self.log_episodes:
             log = binding.vec_log(self.c_envs)
             if log:
+                log['log_idx'] = self.log_idx
                 info.append(log)
+                self.log_idx += 1
 
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
             

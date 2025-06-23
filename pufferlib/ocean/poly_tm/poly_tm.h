@@ -17,7 +17,7 @@ An Env for learning polynomial time oracles in Pufferlib.
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 
-#define OBS_LEN(env) (4 * (env)->observation_window + 3)
+#define OBS_LEN(env) (4 * (env)->observation_window + 2)
 
 typedef struct Log Log;
 struct Log{
@@ -60,6 +60,8 @@ struct PolyTM {
     int move_state;
     int move_work;
 
+    int max_steps;
+
     //problem parameters
     int max_a;
     int max_i;
@@ -93,6 +95,7 @@ struct PolyTM {
 
 //function prototypes
 bool check_soln_correctness(PolyTM*);
+bool check_correctness_side_1(PolyTM*);
 
 static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi: v; }
 
@@ -112,7 +115,7 @@ void init(PolyTM* env) {
     env->utility =env->problem+2;
 
     env->results  = env->tape_work + env->tape_size - env->max_i - 1;
-    env ->halt = env->tape_work + env->tape_size - 1;
+    env->halt = env->tape_work + env->tape_size - 1;
 
     env->returns = (float*)calloc(1, sizeof(float));
 
@@ -128,7 +131,7 @@ void init(PolyTM* env) {
 
 void allocate(PolyTM* env) {
     env->observations = (int*)calloc(OBS_LEN(env), sizeof(int));
-    env->actions = (int*)calloc(5, sizeof(int));
+    env->actions = (int*)calloc(4, sizeof(int));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
     init(env);
@@ -182,15 +185,14 @@ void compute_observations(PolyTM* env) {
     tape_window_to_obs(env->tape_work, env->head_work, env->observations, env->observation_window, env->tape_size);
     tape_window_to_obs(env->tape_state, env->head_state, env->observations + window, env->observation_window, env->tape_size);
 
-    env->observations[OBS_LEN(env) - 1] = env->state;
 }
 
 void c_reset(PolyTM* env) {
     env->tick = 0;
     memset(env->observations, 0, (OBS_LEN(env)) * sizeof(int));
 
-    memset(env->tape_work, 0, env->tape_size * sizeof(int));
-    memset(env->tape_state, 0, env->tape_size * sizeof(int));
+    memset(env->tape_work, -1, env->tape_size * sizeof(int));
+    memset(env->tape_state, -1, env->tape_size * sizeof(int));
 
     env->head_work = env->tape_size / 2;
     env->head_state = env->tape_size / 2;
@@ -200,28 +202,33 @@ void c_reset(PolyTM* env) {
     memset(env->precomputed_um,  0, env->max_a * env->max_a * sizeof(int));
     memset(env->precomputed_us,  0, env->max_a * env->max_a * sizeof(int));
 
+    //Main problem init
     //Generate a new problem instance
     /* at the top of main() or vec_init() once per process */
 
-    env->num_a = 4;
-    env->num_i = rng_u32(&env->rng_state) % (env->max_i - 1) + 2;
+    // env->num_a = 2;
+    // env->num_i = rng_u32(&env->rng_state) % (env->max_i - 1) + 2;
 
 
-    env->problem[0] = env->num_a;
-    env->problem[1] = env->num_i;
+    // env->problem[0] = env->num_a;
+    // env->problem[1] = env->num_i;
 
-    for (int i = 0; i < env->num_a * env->num_i; i++) {
-        env->utility[i] = rng_u32(&env->rng_state) % (env->max_u + 1);
-    }
+    // for (int i = 0; i < env->num_a * env->num_i; i++) {
+    //     env->utility[i] = rng_u32(&env->rng_state) % (env->max_u + 1);
+    // }
 
 
-    for (int i = 0; i < env->num_a; i++)
-    {
-        for (int j = 0; j < env->num_a; j++)
-        {
-            env->precomputed_um[i * env->max_a + j] = INT_MAX;
-        }
-    }
+    // for (int i = 0; i < env->num_a; i++)
+    // {
+    //     for (int j = 0; j < env->num_a; j++)
+    //     {
+    //         env->precomputed_um[i * env->max_a + j] = INT_MAX;
+    //     }
+    // }
+
+    //Side problem-1 init
+    env->problem[0] = rng_u32(&env->rng_state) % (10);
+    env->problem[1] = rng_u32(&env->rng_state) % (10);
 
     compute_observations(env);
 }
@@ -232,8 +239,8 @@ void c_step(PolyTM* env){
 
     env->rewards[0] = 0.0f;
 
-    env->rewards[0] -= env->nen_halt_penalty;
-    env->returns[0] -= env->nen_halt_penalty;
+    // env->rewards[0] -= env->nen_halt_penalty;
+    // env->returns[0] -= env->nen_halt_penalty;
 
     // Process actions s_t -> s_t+1
 
@@ -247,16 +254,47 @@ void c_step(PolyTM* env){
     env->head_state += (int)env->actions[3]  - env->move_state;
     env->head_state = clampi(env->head_state, 0, env->tape_size - 1);
 
+    //
 
-    env->state = env->actions[4];
+    int correct = (env->problem[0] + env->problem[1]) % env->work_alphabet;
+    int written = env->results[0];
 
+    if (written < 0)
+    {
+        env->rewards[0] -= 2.0f;
+        env->returns[0] -= 2.0f;
+    }
+    else
+    {
+        int delta = abs(correct - written) % env->work_alphabet;
+
+        float bonus = delta * 0.01f; // range 0.0 … +1.0
+        
+        env->rewards[0] += bonus;
+        env->returns[0] += bonus;
+    }
 
     env->terminals[0] = env->halt[0] > 0 ? 1 : 0;
 
-    if (env->halt[0]) {
+    if (!env->terminals[0]) {
+        if (env->tick >= env->max_steps) {
+            env->terminals[0] = 1;
+        } else {
+            env->terminals[0] = 0;
+        }
+    }
 
-        bool res = check_soln_correctness(env);
+    if (env->terminals[0]) {
 
+        //Main problem halt
+        bool res = check_correctness_side_1(env);
+        
+        if (env->results[0] == -1) {
+            res = false;
+            env->rewards[0] -= 2.0f;
+            env->returns[0] -= 2.0f;
+        }
+        
         if (res) {
             env->rewards[0] += env->correctness_reward;
             env->returns[0] += env->correctness_reward;
@@ -265,27 +303,25 @@ void c_step(PolyTM* env){
             env->rewards[0] -= env->incorrectness_penalty;
             env->returns[0] -= env->incorrectness_penalty;
         }
-
+        
         
         env->log.perf += res ? 1.0f : 0.0f;
-        env->log.score += env->returns[0]; // Score metric TODO: change score
+        env->log.score += env->returns[0];
         env->log.episode_length += env->tick;
         env->log.episode_return += env->returns[0];
 
         env->log.running_time += (float)env->tick;
-        env->log.correctness += res ? 1.0f : 0.0f; 
+        env->log.correctness += res ? 100.0f : 0.0f; 
         env->log.n += 1.0f;
 
         c_reset(env);
-    } 
-    else
-    {
-        ;
     }
+    
 
     compute_observations(env);
 }
 
+//Main problem correctness
 bool check_soln_correctness(PolyTM* env) {
     // checks if the allocation if EFX
 
@@ -319,6 +355,19 @@ bool check_soln_correctness(PolyTM* env) {
     // If we reach here, the allocation is EFX
 
     return true;
+}
+
+// side problem-1
+bool check_correctness_side_1(PolyTM* env)
+{
+    if (env->results[0] == (env->problem[0] +  env->problem[1]) % env->work_alphabet)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
 }
 
 void c_render()
