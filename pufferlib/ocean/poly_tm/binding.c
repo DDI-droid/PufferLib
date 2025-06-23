@@ -16,6 +16,8 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->move_state = unpack(kwargs, "move_state");
     env->move_work = unpack(kwargs, "move_work");
 
+    env->max_steps = unpack(kwargs, "max_steps");
+
 
     env->max_a = unpack(kwargs, "max_a");
     env->max_i = unpack(kwargs, "max_i");
