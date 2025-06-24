@@ -370,7 +370,7 @@ bool check_correctness_side_1(PolyTM* env)
     }
 }
 
-void c_render()
+void c_render(PolyTM* env)
 {
     ;
 }
