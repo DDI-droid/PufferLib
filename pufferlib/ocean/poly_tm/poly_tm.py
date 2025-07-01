@@ -6,37 +6,57 @@ from pufferlib.ocean.poly_tm import binding
 
 
 class PolyTM(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode="auto", log_interval=1, log_episodes=10, nen_halt_penalty=1.0,
-            correctness_reward=10.0, incorrectness_penalty=10.0, tape_size=512,
-            observation_window=16, work_alphabet=256,
-            state_alphabet=256, move_state=10, move_work=10, max_steps = 300,
-            max_a=4, max_i=50, max_u=50, buf=None, seed=0):
+    def __init__(
+        self,
+        num_envs=1,
+        render_mode="auto",
+        log_interval=1,
+        log_episodes=10,
+        work_tape_size=256,
+        state_tape_size=256,
+        result_tape_size=256,
+        work_observation_window=16,
+        state_observation_window=16,
+        result_observation_window=16,
+        tape_alphabet=10,
+        move_head=10,
+        num_work_heads=5,
+        num_state_heads=2,
+        num_result_heads=1,
+        nen_halt_penalty=1.0,
+        correctness_reward=10.0,
+        incorrectness_penalty=10.0,
+        max_steps = 300,
+        problem_size=2,
+        max_a=4,
+        max_i=50,
+        max_u=50,
+        buf=None,
+        seed=0
+        ):
 
-        self.tape_size = tape_size
-        self.observation_window = int(observation_window)
+        # self.tape_size = tape_size
+        # self.observation_window = int(observation_window)
         
-        self.work_alphabet = int(work_alphabet)
-        self.state_alphabet = int(state_alphabet)
-        self.move_work = move_work
-        self.move_state = move_state
+        # self.work_alphabet = int(work_alphabet)
+        # self.state_alphabet = int(state_alphabet)
+        # self.move_work = move_work
+        # self.move_state = move_state
         
-        # print(f"PolyTM: tape_size={tape_size}, observation_window={observation_window}, "
-        #       f"work_alphabet={work_alphabet}, state_alphabet={state_alphabet}, "
-        #       f"move_work={move_work}, move_state={move_state}, "
-        #       f"nen_halt_penalty={nen_halt_penalty}, correctness_reward={correctness_reward}, "
-        #       f"incorrectness_penalty={incorrectness_penalty}")
+        assert tape_alphabet < 255, "tape stores chars!!"
 
         
         self.max_a = max_a
         self.max_i = max_i
         self.max_u = max_u
         
-        self.num_obs = 2 * self.observation_window + 1 + 2*self.observation_window+ 1
+        self.num_obs = (problem_size + num_work_heads * (2 * work_observation_window + 1) + \
+                                    num_state_heads * (2 * state_observation_window + 1) + \
+                                    num_result_heads * (2 * result_observation_window + 1))
 
-        self.num_actions = 4
+        self.num_actions = 3
         
         self.log_idx = 0
-
         
         self.num_agents = num_envs
         self.render_mode = render_mode
@@ -47,14 +67,14 @@ class PolyTM(pufferlib.PufferEnv):
         self.max_steps = max_steps
 
         self.single_observation_space = gymnasium.spaces.Box(
-            low=0,
-            high=max(self.work_alphabet, self.state_alphabet) - 1,
+            low=-1,
+            high=tape_alphabet - 1,
             shape=(self.num_obs,),
-            dtype=np.int32
+            dtype=np.int8
         )
         
         self.single_action_space = gymnasium.spaces.MultiDiscrete(
-            [self.work_alphabet, 2 * self.move_work + 1, self.state_alphabet, 2 * self.move_state + 1],
+            [num_work_heads + num_state_heads + num_result_heads, tape_alphabet, 2 * move_head + 1],
             dtype=np.int32
         )
 
@@ -68,27 +88,30 @@ class PolyTM(pufferlib.PufferEnv):
             self.truncations,
             num_envs,
             seed,
+            work_tape_size=work_tape_size,
+            state_tape_size=state_tape_size,
+            result_tape_size=result_tape_size,
+            work_observation_window=work_observation_window,
+            state_observation_window=state_observation_window,
+            result_observation_window=result_observation_window,
+            tape_alphabet=tape_alphabet,
+            move_head=move_head,
+            num_work_heads=num_work_heads,
+            num_state_heads=num_state_heads,
+            num_result_heads=num_result_heads,
             nen_halt_penalty=nen_halt_penalty,
             correctness_reward=correctness_reward,
             incorrectness_penalty=incorrectness_penalty,
-            tape_size=self.tape_size,
-            observation_window=self.observation_window,
-            work_alphabet=self.work_alphabet,
-            state_alphabet=self.state_alphabet,
-            move_work=self.move_work,
-            move_state=self.move_state,
-            max_steps=self.max_steps,
+            max_steps=max_steps,
+            problem_size=problem_size,
             max_a=self.max_a,
             max_i=self.max_i,
-            max_u=self.max_u,
+            max_u=self.max_u
         )
         
     def reset(self, seed=None):
-        self.tick = 0      
-        if seed is None:
-            binding.vec_reset(self.c_envs, 0)
-        else:
-            binding.vec_reset(self.c_envs, seed)
+        self.tick = 0
+        binding.vec_reset(self.c_envs, seed)
         return self.observations, []
         
     def step(self, actions):
