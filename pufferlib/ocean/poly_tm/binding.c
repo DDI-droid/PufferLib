@@ -4,20 +4,30 @@
 #include "../env_binding.h"
 
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
+
+    env->work_tape_size = unpack(kwargs, "work_tape_size");
+    env->state_tape_size = unpack(kwargs, "state_tape_size");
+    env->result_tape_size = unpack(kwargs, "result_tape_size");
+
+    env->work_observation_window = unpack(kwargs, "work_observation_window");
+    env->state_observation_window = unpack(kwargs, "state_observation_window");
+    env->result_observation_window = unpack(kwargs, "result_observation_window");
+
+    env->tape_alphabet = unpack(kwargs, "tape_alphabet");
+
+    env->move_head = unpack(kwargs, "move_head");
+
+    env->num_work_heads = unpack(kwargs, "num_work_heads");
+    env->num_state_heads = unpack(kwargs, "num_state_heads");
+    env->num_result_heads = unpack(kwargs, "num_result_heads");
     
     env->nen_halt_penalty = unpack(kwargs, "nen_halt_penalty");
     env->correctness_reward = unpack(kwargs, "correctness_reward");
     env->incorrectness_penalty = unpack(kwargs, "incorrectness_penalty");
 
-    env->tape_size = unpack(kwargs, "tape_size");
-    env->observation_window = unpack(kwargs, "observation_window");
-    env->work_alphabet = unpack(kwargs, "work_alphabet");
-    env->state_alphabet = unpack(kwargs, "state_alphabet");
-    env->move_state = unpack(kwargs, "move_state");
-    env->move_work = unpack(kwargs, "move_work");
-
     env->max_steps = unpack(kwargs, "max_steps");
 
+    env->problem_size = unpack(kwargs, "problem_size");
 
     env->max_a = unpack(kwargs, "max_a");
     env->max_i = unpack(kwargs, "max_i");

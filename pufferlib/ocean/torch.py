@@ -1049,7 +1049,8 @@ class PolyTM(nn.Module):
 
         self.proj = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Linear(self.num_observations, hidden_size)),
-            nn.ReLU(),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU()
         )
 
 
@@ -1058,8 +1059,9 @@ class PolyTM(nn.Module):
 
 
         self.value_fn = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=0.01),
-            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size), std=0.01),
+            nn.SiLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=0.01)
         )
 
     def forward(self, observations, state=None):
