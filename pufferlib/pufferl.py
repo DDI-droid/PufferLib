@@ -817,6 +817,7 @@ class NeptuneLogger:
         neptune_project = args['neptune_project']
         neptune = nept.init_run(
             project=f"{neptune_name}/{neptune_project}",
+            api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIwZDM3MTc4OS1jNzNjLTRiNTEtYjZmYy01MGYxZTllMjc2OGUifQ==",
             capture_hardware_metrics=False,
             capture_stdout=False,
             capture_stderr=False,
@@ -987,6 +988,8 @@ def eval(env_name, args=None, vecenv=None, policy=None):
             import imageio
             imageio.mimsave(args['gif_path'], frames, fps=args['fps'], loop=0)
             frames.append('Done')
+
+        time.sleep(0.5)
 
 def sweep(args=None, env_name=None):
     args = args or load_config(env_name)

@@ -20,10 +20,6 @@ import numpy as np
 
 import einops
 
-import transformers
-from PIL import Image
-import torchvision.transforms as T
-
 class Boids(nn.Module):
     def __init__(self, env, cnn_channels=32, hidden_size=128, **kwargs):
         super().__init__()
@@ -903,132 +899,101 @@ class Tetris(nn.Module):
         value = self.value_fn(hidden)  # (B, 1)
         return action, value
 
+class TableTransformerLSTM(pufferlib.models.LSTMWrapper):
+    def __init__(self, env, policy, input_size = 256, hidden_size = 256):
+        super().__init__(env, policy, input_size, hidden_size)
 
 class TableTransformer(nn.Module):
-    def __init__(
-        self,
-        env,
-        base_ckpt='microsoft/table-transformer-structure-recognition-v1.1-all',
-        device='cuda',
-        image_path='/media/user/EXT_DRIVE/Anshul/Ocean/pufferlib/pufferlib/resources/table_transformer/table_structure.jpg',
-        **kwargs
-    ):
+    def __init__(self, env, hidden_size=256, **kwargs):
         super().__init__()
+        self.hidden_size = hidden_size
 
-        self.device = torch.device(device)
+        self.is_continuous = False
 
-        self.detector = (
-            transformers.TableTransformerForObjectDetection
-            .from_pretrained(base_ckpt)
-            .to(self.device)
+
+        self.n_observations = env.single_observation_space.shape[0]
+
+        self.proj = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.n_observations, hidden_size), std=0.01),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
         )
-        self.detector.train(True)
 
-        self.img_processor = transformers.AutoImageProcessor.from_pretrained(base_ckpt, use_fast=True)
-        self.img_processor.size = {"shortest_edge": 800, "longest_edge": 800}
-
-        for param in self.detector.parameters():
-            param.requires_grad_(True)
-
-        self.d_model = self.detector.config.hidden_size
-        self.num_queries = self.detector.config.num_queries
-
-        self.actor_mean = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(self.num_queries * self.d_model, env.single_action_space.shape[0]), std=0.01)
+        self.atn_dim = env.single_action_space.nvec.tolist()
+        self.actor = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, sum(self.atn_dim)), std=0.01
         )
-        
-        self.actor_logstd = nn.Parameter(torch.ones(1, env.single_action_space.shape[0]))
-         
+
         self.value_fn = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(self.num_queries * self.d_model, 1),std=1.0)
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size), std=0.01),
+            nn.SiLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=0.01),
         )
 
+        if False:
+            pass
+        else:
+            self.word_boxes_path = "/home/anshult/Documents/Ocean/pufferlib/resources/table_transformer/table_p1_words.txt"
+            
+            with open(self.word_boxes_path, "r") as f:
+                self.word_boxes = [float(coord) for coord in f.readlines()[0].split(', ')]
 
-        self.img = Image.open(image_path).convert('RGB')
-        # transform = T.Compose([
-        #     T.Resize((800, 800)),
-        #     T.ToTensor()
-        # ])
-        self.img_enc = self.img_processor(images=self.img, return_tensors="pt")
-        self.img = self.img_enc.pixel_values.to(self.device) / 255.0
+            self.word_boxes = torch.tensor(self.word_boxes, dtype=torch.float32)
 
-        self.mask = torch.ones((self.img.shape[0], self.img.shape[2], self.img.shape[3]), dtype=torch.bool, device=self.img.device)
+            self.register_buffer("word_boxes_buffer", self.word_boxes)
 
-        # self.img = transform(self.img).unsqueeze(0).to(self.device)
+            self.word_boxes = self.word_boxes.to(torch.device("cuda"))
 
-    def forward(self, observations: torch.Tensor, state=None) -> torch.Tensor:
+            self.pre_comp_word_boxes = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(4, 2), std=0.01),
+                nn.SiLU()
+            )
+
+            self.pre_comp_word_boxes_proj = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(self.word_boxes.shape[0] // 2, hidden_size), std=0.01),
+                nn.LayerNorm(hidden_size),
+                nn.SiLU()
+            )
+
+            self.hidden_feature_proj = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(2 * hidden_size, hidden_size), std=0.01),
+                nn.LayerNorm(hidden_size),
+                nn.ReLU()
+            )
+            self.ln_l = nn.LayerNorm(hidden_size)
+
+    def forward(self, observations, state=None):
         hidden = self.encode_observations(observations)
-        probs, value = self.decode_actions(hidden)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
 
-        return probs, value
+    def forward_train(self, x, state=None):
+        return self.forward(x, state)
 
-    def forward_train(self, observation: torch.Tensor, state=None) -> tuple[torch.Tensor, torch.Tensor]:
-        hidden = self.encode_observations(observation)
-        probs, value = self.decode_actions(hidden)
+    def encode_observations(self, observations, state=None):
+        features = self.proj(observations.float())
 
-        return probs, value
+        if hasattr(self, 'word_boxes'):
+            word_boxes = self.word_boxes.view(1, -1, 4)
+            word_boxes_f = self.pre_comp_word_boxes(word_boxes)
+            word_boxes_f = einops.rearrange(word_boxes_f, 'b h w -> b (h w)')
+            word_boxes_f = self.pre_comp_word_boxes_proj(word_boxes_f)
 
-    def forward_eval(self, observation: torch.Tensor, state=None) -> tuple[torch.Tensor, torch.Tensor]:
-        hidden = self.encode_observations(observation)
-        probs, value = self.decode_actions(hidden)
+            word_boxes_f = word_boxes_f.expand(features.shape[0], -1)
 
-        return probs, value
+            hidden_features = torch.cat([features, word_boxes_f], dim=-1)
 
-    def encode_observations(self, observations: torch.Tensor, state=None) -> torch.Tensor:
+            hidden_features = self.hidden_feature_proj(hidden_features)
 
-        outs = self.detector(
-            pixel_values=self.img, pixel_mask=self.mask,
-            output_hidden_states=True
-        )
+            features = self.ln_l(features + hidden_features)
 
+        return features
 
-        # boxes = outs.pred_boxes  # shape: [B, num_queries, 4]
-        # logits = outs.logits     # shape: [B, num_queries, num_classes]
+    def decode_actions(self, flat_hidden):
+        value = self.value_fn(flat_hidden)
 
-        # labels = torch.argmax(logits, dim=-1).unsqueeze(-1).float()
-
-        h_state = outs.decoder_hidden_states[-1]  # shape: [B, num_queries, d_model]
-
-        # h_state = torch.nan_to_num(h_state, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # h_state += 1e-6 * torch.randn_like(h_state)
-
-        # print("h!", h_state)
-
-        hidden = h_state # shape: [B, num_queries, d_model]
-
-
-
-        hidden = einops.repeat(
-            hidden, 'b q d -> (repeat b) q d', repeat=observations.shape[0]
-        )
-
-        hidden = einops.rearrange(hidden, 'b q d -> b (q d)')
-
-        return hidden # shape: [B, num_queries * d_model]
-
-
-
-    def decode_actions(self, hidden: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        # print("h", hidden)
-
-        action_mean = self.actor_mean(hidden)
-        action_mean = torch.where(torch.isnan(action_mean), torch.zeros_like(action_mean), action_mean)
-
-
-        logstd = self.actor_logstd.expand_as(action_mean)
-
-        action_std = torch.exp(logstd)
-        action_std = action_std.clamp(min=1e-6)
-        action_std=  action_std.clamp(max=5.0)
-        
-        action_std = torch.where(torch.isnan(action_std), torch.ones_like(action_std), action_std)
-        
-        action = Normal(action_mean, action_std)
-
-
-        value = self.value_fn(hidden)
-        value = torch.where(torch.isnan(value), torch.zeros_like(value), value)
+        action = self.actor(flat_hidden)
+        action = torch.split(action, self.atn_dim, dim=1)
 
 
         return action, value

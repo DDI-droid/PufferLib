@@ -8,15 +8,21 @@
  */
 
 #include "table_transformer.h"
+#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
 
 int main()
 {
     TableTransformer env = {
         .img_channels = 4,
-        .img_height = 2600,
-        .img_width = 3300,
+        .img_height = 1200,
+        .img_width = 2200,
 
-        .num_action_boxes = 125,
+        .step_penalty = 0.01f,
+        .d_position = 0.01f,
 
         .iou_inside = 0.4f,
         .iou_cell = 0.4f,
@@ -36,13 +42,28 @@ int main()
     // c_render(&env);
 
     int i = 0;
-    while (i < 40)
+    int start = time(NULL);
+    int num_steps = 0;
+    
+    while (i < 400000)
     {
+
+        // Simulate some actions
+        for (int j = 0; j < 4 * env.n_cell_boxes + env.n_cell_boxes + 1; ++j)
+        {
+            env.actions[j] = rand() % 2; // Random actions for testing
+        }
 
         c_step(&env);
         // c_render(&env);
         i++;
+
+        num_steps++;
     }
+
+    int end = time(NULL);
+    float sps = num_steps / (float)(end - start);
+    printf("Test Environment SPS: %f\n", sps);
 
     free_allocated(&env);
 }
