@@ -29,9 +29,9 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
 
     env->problem_size = unpack(kwargs, "problem_size");
 
-    env->max_a = unpack(kwargs, "max_a");
-    env->max_i = unpack(kwargs, "max_i");
-    env->max_u = unpack(kwargs, "max_u");
+    // env->max_a = unpack(kwargs, "max_a");
+    // env->max_i = unpack(kwargs, "max_i");
+    // env->max_u = unpack(kwargs, "max_u");
 
     init(env);
     return 0;

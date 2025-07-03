@@ -30,7 +30,7 @@ struct Log{
 
     // Any extra fields you add here may be exported to Python in binding.c
     float running_time; // Time taken to solve current env instance
-    float correctness; // Is the result of the oracle correct? 0-1
+    float correctness; // Is the result of the oracle correct? 0-100
 
 
     float n; // Required as the last field 
@@ -82,15 +82,15 @@ struct PolyTM {
     int* result_heads;
 
     char* problem;
-    int  problem_size;
+    int problem_size;
 
     // problem parameters
-    int max_a;
-    int max_i;
-    int max_u;
+    // int max_a;
+    // int max_i;
+    // int max_u;
 
-    int num_a;
-    int num_i;
+    // int num_a;
+    // int num_i;
 
     //problem pointers
     // int* utility;
@@ -116,7 +116,6 @@ struct PolyTM {
 
 //function prototypes
 bool check_soln_correctness(PolyTM*);
-bool check_correctness_side_1(PolyTM*);
 
 static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi: v; }
 
@@ -187,7 +186,7 @@ void free_allocated(PolyTM* env) {
     free(env->actions);
     free(env->rewards);
     free(env->terminals);
-    free_initialized(env);
+    c_close(env);
 }
 
 static inline void tape_window_to_obs(const char *tape, int head, char *dst, int w, int tape_size)
@@ -295,6 +294,7 @@ void c_reset(PolyTM* env) {
     memset(env->tape_state, -1, env->state_tape_size * sizeof(char));
     memset(env->tape_result, -1, env->result_tape_size * sizeof(char));
 
+    // TODO: better initialization
     memset(env->work_heads, 0, env->num_work_heads * sizeof(int));
     memset(env->state_heads, 0, env->num_state_heads * sizeof(int));
     memset(env->result_heads, 0, env->num_result_heads * sizeof(int));
@@ -357,48 +357,48 @@ void c_step(PolyTM* env){
     bool wrote_halt = false;
 
     if (env->actions[0] < env->num_work_heads) {
-        env->tape_work[env->work_heads[env->actions[0]]] = (char)env->actions[1];
+        env->ch_head_idx = env->actions[0];
 
-        env->ch_tape_idx = env->work_heads[env->actions[0]];
+        env->tape_work[env->work_heads[env->ch_head_idx]] = (char)env->actions[1];
 
-        env->work_heads[env->actions[0]] += env->actions[2] - env->move_head;
-        env->work_heads[env->actions[0]] = clampi(env->work_heads[env->actions[0]], 0, env->work_tape_size - 1);
+        env->ch_tape_idx = env->work_heads[env->ch_head_idx];
+
+        env->work_heads[env->ch_head_idx] += env->actions[2] - env->move_head;
+        env->work_heads[env->ch_head_idx] = clampi(env->work_heads[env->ch_head_idx], 0, env->work_tape_size - 1);
 
         env->ch_work = true;
         env->ch_state = false;
         env->ch_result = false;
-
-        env->ch_head_idx = env->actions[0];
     }
     else if (env->actions[0] < env->num_work_heads + env->num_state_heads){
-        env->tape_state[env->state_heads[env->actions[0] - env->num_work_heads]] = (char)env->actions[1];
+        env->ch_head_idx = env->actions[0] - env->num_work_heads;
 
-        env->ch_tape_idx = env->state_heads[env->actions[0] - env->num_work_heads];
+        env->tape_state[env->state_heads[env->ch_head_idx]] = (char)env->actions[1];
 
-        env->state_heads[env->actions[0] - env->num_work_heads]+= env->actions[2] - env->move_head;
-        env->state_heads[env->actions[0] - env->num_work_heads] = clampi(env->state_heads[env->actions[0] - env->num_work_heads], 0, env->state_tape_size - 1);
+        env->ch_tape_idx = env->state_heads[env->ch_head_idx];
+
+        env->state_heads[env->ch_head_idx] += env->actions[2] - env->move_head;
+        env->state_heads[env->ch_head_idx] = clampi(env->state_heads[env->ch_head_idx], 0, env->state_tape_size - 1);
 
         wrote_halt = (env->actions[1] == 0);
 
         env->ch_work = false;
         env->ch_state = true;
         env->ch_result = false;
-
-        env->ch_head_idx = env->actions[0] - env->num_work_heads;
     }
     else{
-        env->tape_result[env->result_heads[env->actions[0] - env->num_work_heads - env->num_state_heads]] = (char)env->actions[1];
+        env->ch_head_idx = env->actions[0] - env->num_work_heads - env->num_state_heads;
 
-        env->ch_tape_idx = env->result_heads[env->actions[0] - env->num_work_heads - env->num_state_heads];
+        env->tape_result[env->result_heads[env->ch_head_idx]] = (char)env->actions[1];
 
-        env->result_heads[env->actions[0] - env->num_work_heads - env->num_state_heads] += env->actions[2] - env->move_head;
-        env->result_heads[env->actions[0] - env->num_work_heads - env->num_state_heads] = clampi(env->result_heads[env->actions[0] - env->num_work_heads - env->num_state_heads], 0, env->result_tape_size- 1);
+        env->ch_tape_idx = env->result_heads[env->ch_head_idx];
+
+        env->result_heads[env->ch_head_idx] += env->actions[2] - env->move_head;
+        env->result_heads[env->ch_head_idx] = clampi(env->result_heads[env->ch_head_idx], 0, env->result_tape_size- 1);
 
         env->ch_work = false;
         env->ch_state = false;
         env->ch_result = true;
-
-        env->ch_head_idx = env->actions[0] - env->num_work_heads - env->num_state_heads;
     }
 
     //
@@ -432,9 +432,7 @@ void c_step(PolyTM* env){
     }
 
     if (env->terminals[0]) {
-
-        //Main problem halt
-        bool res = check_correctness_side_1(env);
+        bool res = check_soln_correctness(env);
         
         if (env->tape_result[0] == -1) {
             res = false;
@@ -504,10 +502,9 @@ void c_step(PolyTM* env){
 //     return true;
 // }
 
-// side problem-1
-bool check_correctness_side_1(PolyTM* env)
+bool check_soln_correctness(PolyTM* env)
 {
-    if (env->tape_result[0] == (env->problem[0] +  env->problem[1]) % env->tape_alphabet)
+    if (env->tape_result[0] == (env->problem[0] *  env->problem[1]) % env->tape_alphabet)
     {
         return true;
     }
