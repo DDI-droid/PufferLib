@@ -28,9 +28,9 @@ class PolyTM(pufferlib.PufferEnv):
         incorrectness_penalty=10.0,
         max_steps = 300,
         problem_size=2,
-        max_a=4,
-        max_i=50,
-        max_u=50,
+        # max_a=4,
+        # max_i=50,
+        # max_u=50,
         buf=None,
         seed=0
         ):
@@ -44,11 +44,25 @@ class PolyTM(pufferlib.PufferEnv):
         # self.move_state = move_state
         
         assert tape_alphabet < 255, "tape stores chars!!"
+        
+        # convert everything to int
+        work_tape_size = int(work_tape_size)
+        state_tape_size = int(state_tape_size)
+        result_tape_size = int(result_tape_size)
+        work_observation_window = int(work_observation_window)
+        state_observation_window = int(state_observation_window)
+        result_observation_window = int(result_observation_window)
+        tape_alphabet = int(tape_alphabet)
+        move_head = int(move_head)
+        num_work_heads = int(num_work_heads)
+        num_state_heads = int(num_state_heads)
+        num_result_heads = int(num_result_heads)
+        
 
         
-        self.max_a = max_a
-        self.max_i = max_i
-        self.max_u = max_u
+        # self.max_a = max_a
+        # self.max_i = max_i
+        # self.max_u = max_u
         
         self.num_obs = (problem_size + num_work_heads * (2 * work_observation_window + 1) + \
                                     num_state_heads * (2 * state_observation_window + 1) + \
@@ -104,9 +118,9 @@ class PolyTM(pufferlib.PufferEnv):
             incorrectness_penalty=incorrectness_penalty,
             max_steps=max_steps,
             problem_size=problem_size,
-            max_a=self.max_a,
-            max_i=self.max_i,
-            max_u=self.max_u
+            # max_a=self.max_a,
+            # max_i=self.max_i,
+            # max_u=self.max_u
         )
         
     def reset(self, seed=None):
