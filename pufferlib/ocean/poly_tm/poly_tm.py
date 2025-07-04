@@ -24,6 +24,7 @@ class PolyTM(pufferlib.PufferEnv):
         num_state_heads=2,
         num_result_heads=1,
         nen_halt_penalty=1.0,
+        invalid_output_penalty=2.0,
         correctness_reward=10.0,
         incorrectness_penalty=10.0,
         max_steps = 300,
@@ -45,7 +46,7 @@ class PolyTM(pufferlib.PufferEnv):
         
         assert tape_alphabet < 255, "tape stores chars!!"
         
-        # convert everything to int
+        # convert everything to int (okay not everything, but u get the point)
         work_tape_size = int(work_tape_size)
         state_tape_size = int(state_tape_size)
         result_tape_size = int(result_tape_size)
@@ -57,6 +58,7 @@ class PolyTM(pufferlib.PufferEnv):
         num_work_heads = int(num_work_heads)
         num_state_heads = int(num_state_heads)
         num_result_heads = int(num_result_heads)
+        problem_size = int(problem_size)
         
 
         
@@ -114,6 +116,7 @@ class PolyTM(pufferlib.PufferEnv):
             num_state_heads=num_state_heads,
             num_result_heads=num_result_heads,
             nen_halt_penalty=nen_halt_penalty,
+            invalid_output_penalty=invalid_output_penalty,
             correctness_reward=correctness_reward,
             incorrectness_penalty=incorrectness_penalty,
             max_steps=max_steps,

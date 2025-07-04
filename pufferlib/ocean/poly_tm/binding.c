@@ -22,6 +22,7 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->num_result_heads = unpack(kwargs, "num_result_heads");
     
     env->nen_halt_penalty = unpack(kwargs, "nen_halt_penalty");
+    env->invalid_output_penalty = unpack(kwargs, "invalid_output_penalty");
     env->correctness_reward = unpack(kwargs, "correctness_reward");
     env->incorrectness_penalty = unpack(kwargs, "incorrectness_penalty");
 
