@@ -65,9 +65,9 @@ struct PolyTM {
     int num_state_heads;
     int num_result_heads;
 
-
-
+    
     float nen_halt_penalty;
+    float invalid_output_penalty;
     float correctness_reward;
     float incorrectness_penalty;
 
@@ -112,14 +112,17 @@ struct PolyTM {
     int ch_tape_idx;
 
     uint64_t rng_state;
+
+    //tmp (optimizations mostly)
+    char correct_tmp;
 };
 
 //function prototypes
-bool check_soln_correctness(PolyTM*);
+float check_soln_correctness(PolyTM*);
 
 static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi: v; }
 
-static inline uint32_t rng_u32(uint64_t *state)
+static inline uint32_t rng_u32(uint64_t* state)
 {
     uint64_t z = (*state += 0x9e3779b97f4a7c15ull);
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
@@ -189,7 +192,7 @@ void free_allocated(PolyTM* env) {
     c_close(env);
 }
 
-static inline void tape_window_to_obs(const char *tape, int head, char *dst, int w, int tape_size)
+static inline void tape_window_to_obs(const char* tape, int head, char* dst, int w, int tape_size)
 {
     int left = head - w;
     int right = head + w;
@@ -299,9 +302,12 @@ void c_reset(PolyTM* env) {
     memset(env->state_heads, 0, env->num_state_heads * sizeof(int));
     memset(env->result_heads, 0, env->num_result_heads * sizeof(int));
 
-    // Side problem-1 init
-    env->problem[0] = (char)(rng_u32(&env->rng_state) % (env->tape_alphabet));
-    env->problem[1] = (char)(rng_u32(&env->rng_state) % (env->tape_alphabet));
+    // problem init
+    env->correct_tmp = 1;
+    for (int i = 0; i < env->problem_size; i++) {
+        env->problem[i] = (char)(rng_u32(&env->rng_state) % env->tape_alphabet);
+        env->correct_tmp = (char)((env->correct_tmp * env->problem[i]) % env->tape_alphabet);
+    }
 
     env->returns[0] = 0.0f;
 
@@ -423,24 +429,20 @@ void c_step(PolyTM* env){
 
     env->terminals[0] = wrote_halt ? 1 : 0;
 
-    if (!env->terminals[0]) {
-        if (env->tick >= env->max_steps) {
-            env->terminals[0] = 1;
-        } else {
-            env->terminals[0] = 0;
-        }
+    if (!env->terminals[0] && (env->tick > env->max_steps)) {
+        env->terminals[0] = 1;
     }
 
     if (env->terminals[0]) {
-        bool res = check_soln_correctness(env);
+        float res = check_soln_correctness(env);
         
         if (env->tape_result[0] == -1) {
-            res = false;
-            env->rewards[0] -= 2.0f;
-            env->returns[0] -= 2.0f;
+            res = -1.0f;
+            env->rewards[0] -= env->invalid_output_penalty;
+            env->returns[0] -= env->invalid_output_penalty;
         }
         
-        if (res) {
+        if (res > 0) {
             env->rewards[0] += env->correctness_reward;
             env->returns[0] += env->correctness_reward;
         } 
@@ -450,13 +452,13 @@ void c_step(PolyTM* env){
         }
         
         
-        env->log.perf += res ? 1.0f : 0.0f;
+        env->log.perf += res > 0 ? 1.0f : 0.0f;
         env->log.score += env->returns[0];
         env->log.episode_length += env->tick;
         env->log.episode_return += env->returns[0];
 
         env->log.running_time += (float)env->tick;
-        env->log.correctness += res ? 100.0f : 0.0f; 
+        env->log.correctness += res > 0 ? 100.0f : 0.0f; 
         env->log.n += 1.0f;
 
         c_reset(env);
@@ -502,15 +504,14 @@ void c_step(PolyTM* env){
 //     return true;
 // }
 
-bool check_soln_correctness(PolyTM* env)
+float check_soln_correctness(PolyTM* env)
 {
-    if (env->tape_result[0] == (env->problem[0] *  env->problem[1]) % env->tape_alphabet)
+    if (env->tape_result[0] == env->correct_tmp)
     {
-        return true;
+        return 1.0f;
     }
-    else
-    {
-        return false;
+    else{
+        return -1.0f;
     }
 }
 

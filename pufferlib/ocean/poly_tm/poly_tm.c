@@ -3,20 +3,29 @@
 
 void test_performance(int timeout) {
     PolyTM env = {
+        .work_tape_size = 256,
+        .state_tape_size = 256,
+        .result_tape_size = 256,
+
+        .work_observation_window = 8,
+        .state_observation_window = 8,
+        .result_observation_window = 8,
+
+        .tape_alphabet = 10,
+        .move_head = 10,
+
+        .num_work_heads = 1,
+        .num_state_heads = 1,
+        .num_result_heads = 1,
+
         .nen_halt_penalty = 5.0f,
+        .invalid_output_penalty = 10.0f,
         .correctness_reward = 10.0f,
         .incorrectness_penalty = 5.0f,
 
-        .tape_size = 512,
-        .observation_window = 16,
-        .work_alphabet = 256,
-        .state_alphabet = 256,
-        .move_state = 10,
-        .move_work = 10,
-        
-        .max_a = 4,
-        .max_i = 50,
-        .max_u = 50,
+        .max_steps = 1000,
+
+        .problem_size = 10,
 
     };
 
