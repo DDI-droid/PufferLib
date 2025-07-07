@@ -37,6 +37,8 @@ static int my_log(PyObject *dict, Log *log)
     assign_to_dict(dict, "episode_length", log->episode_length);
     assign_to_dict(dict, "n_cut", log->n_cut);
     assign_to_dict(dict, "n_clustered", log->n_clustered);
+    assign_to_dict(dict, "max_rps", log->max_rps);
+    assign_to_dict(dict, "rps", log->rps);
     assign_to_dict(dict, "n", log->n);
     return 0;
 }

@@ -20,6 +20,14 @@ class TableTransformer(pufferlib.PufferEnv):
                 d_position=5, img_height=7015, img_width=4962, min_steps=4, max_steps=50, stable_r_coeff=0.07, done_r_coeff=10, buf=None, seed=0):
 
 
+        d_position = int(d_position)
+        img_height = int(img_height)
+        img_width = int(img_width)
+
+        min_steps = int(min_steps)
+        max_steps = int(max_steps)
+
+
         self.n_cell_boxes = n_cell_boxes
 
         self.n_observations = 4 * self.n_cell_boxes
@@ -30,7 +38,7 @@ class TableTransformer(pufferlib.PufferEnv):
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=1,
             shape=(self.n_observations,), dtype=np.float32)
         
-        self.single_action_space = gymnasium.spaces.MultiDiscrete([2] * (self.n_actions), dtype=np.int32)
+        self.single_action_space = gymnasium.spaces.MultiDiscrete([2] * (self.n_actions), dtype=np.int8)
         
         self.render_mode = render_mode
         self.num_agents = num_envs

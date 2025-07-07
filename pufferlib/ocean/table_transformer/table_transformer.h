@@ -46,6 +46,8 @@ struct Log
     // Any extra fields you add here may be exported to Python in binding.c
     float n_cut;
     float n_clustered;
+    float max_rps;
+    float rps;
     float n; // Required as the last field
 };
 
@@ -68,7 +70,7 @@ struct TableTransformer
 {
     Log log;
     float* observations;
-    unsigned int* actions;
+    char* actions;
     float* rewards;
     float* returns;
     unsigned char* terminals;
@@ -132,6 +134,7 @@ struct TableTransformer
     int* cluster_comp_write_head;
 
     int* cell_freq_map;
+    int* cell_max_freq_map;
 };
 
 // function declarations
@@ -309,6 +312,7 @@ void init(TableTransformer *env)
     
     env->cluster_comp_write_head = calloc(env->num_clusters, sizeof(int));
     env->cell_freq_map = calloc(env->n_cell_boxes, sizeof(int));
+    env->cell_max_freq_map = calloc(env->n_cell_boxes, sizeof(int));
 }
 
 // for c/c++ testing
@@ -317,7 +321,7 @@ void allocate(TableTransformer *env)
     init(env);
 
     env->observations = (float*)calloc(4 * env->n_cell_boxes, sizeof(float));
-    env->actions = (unsigned int*)calloc(env->n_cell_boxes + 1, sizeof(unsigned int));
+    env->actions = (char*)calloc(env->n_cell_boxes + 1, sizeof(char));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char *)calloc(1, sizeof(unsigned char));
 }
@@ -331,6 +335,7 @@ void free_initialized(TableTransformer *env)
     free(env->cluster_comp);
     free(env->cluster_comp_write_head);
     free(env->cell_freq_map);
+    free(env->cell_max_freq_map);
     free(env->spans);
     free(env->returns);
     free(env->row_y1); 
@@ -368,7 +373,7 @@ static inline float intersection(const float *a, const float *b)
 
 static inline float cut_reward_linear(TableTransformer *env)
 {
-    int good = 0, bad = 0;
+    int bad = 0;
     int ir = 0;
     const int nW = env->n_word_boxes;
 
@@ -405,6 +410,7 @@ static inline float cluster_reward(TableTransformer* env)
 
     memset(env->cluster_comp_write_head, 0, env->num_clusters * sizeof(int));
     memset(env->cell_freq_map, 0, env->n_cell_boxes * sizeof(int));
+    memset(env->cell_max_freq_map, 0, env->n_cell_boxes * sizeof(int));
     //memset(env->cluster_comp, -1, env->num_clusters * env->max_clstr_size * sizeof(int));
 
 
@@ -421,7 +427,7 @@ static inline float cluster_reward(TableTransformer* env)
 
         while ((ir < env->n_row) && (env->row_y2[ir] <= y1)) ++ir;
 
-        if ((env->row_y2[ir] >= y2) && (env->row_y1[ir] <= y1))
+        if ((ir < env->n_row) && (env->row_y2[ir] >= y2) && (env->row_y1[ir] <= y1))
         {
             env->cluster_comp[env->max_clstr_size * cluster_id + env->cluster_comp_write_head[cluster_id]] = ir;
             env->cluster_comp_write_head[cluster_id]++;
@@ -430,27 +436,45 @@ static inline float cluster_reward(TableTransformer* env)
 
     int cluster_rew = 0;
 
+    int max_freq_idx = 0;
     int max_freq = 0;
     for (int i = 0; i < env->num_clusters; i++)
     {
         memset(env->cell_freq_map, 0, env->n_cell_boxes * sizeof(int));
+        max_freq_idx = 0;
         max_freq = 0;
 
         for (int j = 0; j < env->cluster_comp_write_head[i]; j++)
         {
             int cell_idx = env->cluster_comp[i * env->max_clstr_size + j];
             env->cell_freq_map[cell_idx]++;
-            max_freq = max(max_freq, env->cell_freq_map[cell_idx]);
+
+            if (env->cell_freq_map[cell_idx] > max_freq)
+            {
+                max_freq = env->cell_freq_map[cell_idx];
+                max_freq_idx = cell_idx;
+            }
         }
 
-        cluster_rew += max_freq;
+        if (max_freq > env->cell_max_freq_map[max_freq_idx])
+        {
+            env->cell_max_freq_map[max_freq_idx] = max_freq;
+        }    
+    }
 
-        env->max_rps += env->cluster_comp_write_head[i];
+    for (int i = 0; i < env->n_cell_boxes; i++)
+    {
+        if (env->cell_max_freq_map[i] > 0)
+        {
+            cluster_rew += env->cell_max_freq_map[i];
+        }
     }
 
     env->rps += cluster_rew;
 
-    env->n_clustered += cluster_rew;
+    env->max_rps = nW;
+
+    env->n_clustered = cluster_rew;
 
     return env->r_text_const_1 * cluster_rew;
 }
@@ -462,6 +486,7 @@ static inline float compute_reward(TableTransformer *env)
     env->max_rps = 0;
     env->n_clustered = 0;
 
+    
     precomp(env);
 
     float r_comp = cut_reward_linear(env) + cluster_reward(env);
@@ -509,7 +534,7 @@ void c_step(TableTransformer *env)
 
         tmp = env->actions[i] == 0 ? -env->d_position : env->d_position;
 
-        if (env->state_pos[4 * i + 3] + tmp < env->state_pos[4 * i + 1])
+        if ((tmp < 0) && (env->state_pos[4 * i + 3] + tmp < env->state_pos[4 * i + 1]))
             continue;
 
         if ((tmp > 0) && (i < env->n_cell_boxes - 1))
@@ -546,12 +571,14 @@ void c_step(TableTransformer *env)
         env->rewards[0] += r_comp;
         env->returns[0] += r_comp;
 
-        env->log.perf += (env->max_rps > 0) ? env->rps / (float)env->max_rps : 0.0f;
+        env->log.perf += (env->max_rps > 0) ? (float)env->rps / env->max_rps : 0.0f;
         env->log.score += env->returns[0];
         env->log.episode_return += env->returns[0];
         env->log.episode_length += (float)env->tick;
         env->log.n_cut += (float)env->n_cut;
         env->log.n_clustered += (float)env->n_clustered;
+        env->log.max_rps += (float)env->max_rps;
+        env->log.rps += (float)env->rps;
         env->log.n++;
 
         c_reset(env);

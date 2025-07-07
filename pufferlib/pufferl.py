@@ -291,6 +291,7 @@ class PuffeRL:
                     self.free_idx += num_full
                     self.full_rows += num_full
 
+                action = action.to(torch.int8)
                 action = action.cpu().numpy()
                 if isinstance(logits, torch.distributions.Normal):
                     action = np.clip(action, self.vecenv.action_space.low, self.vecenv.action_space.high)
@@ -977,6 +978,7 @@ def eval(env_name, args=None, vecenv=None, policy=None):
             ob = torch.as_tensor(ob).to(device)
             logits, value = policy.forward_eval(ob, state)
             action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
+            action = action.to(torch.int8)
             action = action.cpu().numpy().reshape(vecenv.action_space.shape)
 
         if isinstance(logits, torch.distributions.Normal):
