@@ -18,9 +18,9 @@
 #include "raymath.h"
 
 
-const char* WORD_PATH = "/home/anshult/Documents/Ocean/pufferlib/pufferlib/resources/table_transformer/table_p1_words.txt";
-const char* CELL_BOXES_PATH = "/home/anshult/Documents/Ocean/pufferlib/pufferlib/resources/table_transformer/table_p1_rows.txt";
-const char* CLUSTERS_PATH = "/home/anshult/Documents/Ocean/pufferlib/pufferlib/resources/table_transformer/table_p1_clusters.txt";
+const char* WORD_PATH = "/media/dpa/data/Anshul/Ocean/pufferlib/pufferlib/resources/table_transformer/table_p1_words.txt";
+const char* CELL_BOXES_PATH = "/media/dpa/data/Anshul/Ocean/pufferlib/pufferlib/resources/table_transformer/table_p1_rows.txt";
+const char* CLUSTERS_PATH = "/media/dpa/data/Anshul/Ocean/pufferlib/pufferlib/resources/table_transformer/table_p1_clusters.txt";
 
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define min(a, b) ((a) < (b) ? (a) : (b))

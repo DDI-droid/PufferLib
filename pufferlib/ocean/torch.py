@@ -933,7 +933,7 @@ class TableTransformer(nn.Module):
         if False:
             pass
         else:
-            self.word_boxes_path = "/home/anshult/Documents/Ocean/pufferlib/resources/table_transformer/table_p1_words.txt"
+            self.word_boxes_path = "/media/dpa/data/Anshul/Ocean/pufferlib/resources/table_transformer/table_p1_words.txt"
             
             with open(self.word_boxes_path, "r") as f:
                 self.word_boxes = [float(coord) for coord in f.readlines()[0].split(', ')]
