@@ -25,6 +25,9 @@ class PolyTM(pufferlib.PufferEnv):
         num_result_heads=1,
         nen_halt_penalty=1.0,
         invalid_output_penalty=2.0,
+        cont_rew_mul=5.0,
+        cont_rew_div=1.0,
+        write_rew_multiplier=1.0,
         correctness_reward=10.0,
         incorrectness_penalty=10.0,
         max_steps = 300,
@@ -66,9 +69,23 @@ class PolyTM(pufferlib.PufferEnv):
         # self.max_i = max_i
         # self.max_u = max_u
         
-        self.num_obs = (problem_size + num_work_heads * (2 * work_observation_window + 1) + \
+        self.num_obs = ((num_work_heads + num_state_heads + num_result_heads) + problem_size\
+                                  + num_work_heads * (2 * work_observation_window + 1) + \
                                     num_state_heads * (2 * state_observation_window + 1) + \
                                     num_result_heads * (2 * result_observation_window + 1))
+        
+        self.num_heads = num_work_heads + num_state_heads + num_result_heads
+        self.num_work_heads = num_work_heads
+        self.num_state_heads = num_state_heads
+        self.num_result_heads = num_result_heads
+        self.problem_size = problem_size
+        self.work_tape_size = work_tape_size
+        self.state_tape_size = state_tape_size
+        self.result_tape_size = result_tape_size
+        self.tape_alphabet = tape_alphabet
+        self.work_observation_window = work_observation_window
+        self.state_observation_window = state_observation_window
+        self.result_observation_window = result_observation_window
 
         self.num_actions = 3
         
@@ -117,6 +134,9 @@ class PolyTM(pufferlib.PufferEnv):
             num_result_heads=num_result_heads,
             nen_halt_penalty=nen_halt_penalty,
             invalid_output_penalty=invalid_output_penalty,
+            cont_rew_mul=cont_rew_mul,
+            cont_rew_div=cont_rew_div,
+            write_rew_multiplier=write_rew_multiplier,
             correctness_reward=correctness_reward,
             incorrectness_penalty=incorrectness_penalty,
             max_steps=max_steps,

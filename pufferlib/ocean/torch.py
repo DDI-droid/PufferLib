@@ -1027,6 +1027,40 @@ class Drone(nn.Module):
         values = self.value(hidden)
         return logits, values
 
+class FastSelfAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.0):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim, bias=False)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.dropout = dropout
+
+    def forward(self, x):
+        # x: (B, S, D)
+        B, S, D = x.shape
+        qkv = self.qkv_proj(x)                      # → (B, S, 3D)
+        q, k, v = qkv.chunk(3, dim=-1)              # each (B, S, D)
+        # reshape to (B, num_heads, S, head_dim)
+        q = q.view(B, S, self.num_heads, self.head_dim)
+        k = k.view(B, S, self.num_heads, self.head_dim)
+        v = v.view(B, S, self.num_heads, self.head_dim)
+
+        q_h = q.half()
+        k_h = k.half()
+        v_h = v.half()
+
+        out_h = F.scaled_dot_product_attention(
+            q_h, k_h, v_h,
+            attn_mask=None,
+            dropout_p=self.dropout,
+            is_causal=False,
+        )
+
+        out = out_h.float()
+        out = out.reshape(B, S, D)
+        return self.out_proj(out)
+
 class PolyTMLSTM(pufferlib.models.LSTMWrapper):
     def __init__(self, env, policy, input_size = 256, hidden_size = 256):
         super().__init__(env, policy, input_size, hidden_size)    
@@ -1036,6 +1070,7 @@ class PolyTM(nn.Module):
         self, 
         env, 
         hidden_size=256,
+        alpha_emb_dim=4,
         **kwargs
     ):
         super().__init__()
@@ -1045,12 +1080,60 @@ class PolyTM(nn.Module):
         self.is_continuous = False
         
         self.num_observations = env.num_obs
+        self.problem_size = env.problem_size
 
+        self.work_tape_size = env.work_tape_size
+        self.state_tape_size = env.state_tape_size
+        self.result_tape_size = env.result_tape_size
+        self.max_tape_size = max(self.work_tape_size, self.state_tape_size, self.result_tape_size)
+
+        self.work_observation_window = env.work_observation_window
+        self.state_observation_window = env.state_observation_window
+        self.result_observation_window = env.result_observation_window
+        self.max_observation_window = max(self.work_observation_window, self.state_observation_window, self.result_observation_window)
+
+        self.num_heads = env.num_heads
+        self.tape_alphabet = env.tape_alphabet
+
+        self.num_work_heads = env.num_work_heads
+        self.num_state_heads = env.num_state_heads
+        self.num_result_heads = env.num_result_heads
+        self.max_num_heads = max(self.num_work_heads, self.num_state_heads, self.num_result_heads)
+
+        self.alpha_emb_dim = alpha_emb_dim
+
+        self.obs_sections = self._calculate_sections()
+
+        self.alpha_embd = nn.Sequential(nn.Linear(1, self.alpha_emb_dim), nn.GELU())
+        self.sec_embd = nn.Sequential(nn.Linear(1, self.alpha_emb_dim), nn.GELU())
+        self.head_idx_embd = nn.Sequential(nn.Linear(1, self.alpha_emb_dim), nn.GELU())
+        self.tape_idx_embd = nn.Sequential(nn.Linear(1, self.alpha_emb_dim), nn.GELU())
+
+        self.alpha_prob = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+        
+        self.alpha_work = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+        self.beta_work = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+        self.gamma_work = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+
+        self.alpha_state = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+        self.beta_state = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+        self.gamma_state = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+
+        self.alpha_result = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+        self.beta_result = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+        self.gamma_result = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
+
+        self.norm = nn.LayerNorm(4 * self.alpha_emb_dim)
+
+        self.pool_mlp = nn.Sequential(
+            nn.Linear(self.alpha_emb_dim, self.alpha_emb_dim),
+            nn.GELU(),
+            nn.Linear(self.alpha_emb_dim, 1),
+        )
 
         self.proj = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(self.num_observations, hidden_size)),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU()
+            pufferlib.pytorch.layer_init(nn.Linear(self.alpha_emb_dim * 4, hidden_size), std=0.01),
+            nn.GELU()
         )
 
 
@@ -1058,12 +1141,74 @@ class PolyTM(nn.Module):
         self.actor = pufferlib.pytorch.layer_init(nn.Linear(hidden_size, sum(self.atn_dim)), std=0.01)
 
 
-        self.value_fn = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size), std=0.01),
-            nn.SiLU(),
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=0.01)
-        )
+        self.value_fn = pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=0.01)
 
+        self._precompute_static_indices()
+
+    def _precompute_static_indices(self):
+        device = next(self.parameters()).device
+
+        self.register_buffer('problem_sec_base', torch.zeros(1))
+        self.register_buffer('work_sec_base', torch.ones(1))
+        self.register_buffer('state_sec_base', 2 * torch.ones(1))
+        self.register_buffer('result_sec_base', 3 * torch.ones(1))
+
+        self.register_buffer('sec_base', torch.cat([self.problem_sec_base, self.work_sec_base, self.state_sec_base, self.result_sec_base], dim=0).unsqueeze_(0).unsqueeze_(-1))
+
+        work_head_idx = torch.arange(0, self.num_work_heads)
+        self.register_buffer('work_head_base', work_head_idx.float())
+        
+        state_head_idx = torch.arange(0, self.num_state_heads)
+        self.register_buffer('state_head_base', state_head_idx.float())
+        
+        result_head_idx = torch.arange(0, self.num_result_heads)
+        self.register_buffer('result_head_base', result_head_idx.float())
+
+        self.register_buffer('head_base', torch.cat([self.work_head_base, self.state_head_base, self.result_head_base], dim=0).unsqueeze_(0))
+
+    def _calculate_sections(self):
+        sections = {}
+        start = 0
+        
+        # Problem section
+        sections['problem'] = (start, start + self.problem_size)
+        start += self.problem_size
+
+        #work head idx section
+        sections['work_head_idx'] = (start, start + self.num_work_heads)
+        start += self.num_work_heads
+        
+        #state head idx section
+        sections['state_head_idx'] = (start, start + self.num_state_heads)
+        start += self.num_state_heads
+
+        #result head idx section
+        sections['result_head_idx'] = (start, start + self.num_result_heads)
+        start += self.num_result_heads
+
+        # Work head sections
+        work_size = 2 * self.work_observation_window + 1
+        sections['work_heads'] = []
+        for i in range(self.num_work_heads):
+            sections['work_heads'].append((start, start + work_size))
+            start += work_size
+            
+        # State head sections
+        state_size = 2 * self.state_observation_window + 1
+        sections['state_heads'] = []
+        for i in range(self.num_state_heads):
+            sections['state_heads'].append((start, start + state_size))
+            start += state_size
+            
+        # Result head sections
+        result_size = 2 * self.result_observation_window + 1
+        sections['result_heads'] = []
+        for i in range(self.num_result_heads):
+            sections['result_heads'].append((start, start + result_size))
+            start += result_size
+            
+        return sections
+    
     def forward(self, observations, state=None):
         hidden = self.encode_observations(observations) 
         actions, value = self.decode_actions(hidden)
@@ -1073,9 +1218,101 @@ class PolyTM(nn.Module):
     def forward_train(self, x, state=None):
         return self.forward(x, state)
 
-    def encode_observations(self, observations, state=None):
-        features = self.proj(observations.float())
+    def _efficient_emb_comp(self, actual_obs, head_ind, batch_sz, device):
+        actual_obs = actual_obs.unsqueeze(-1)
+        emb_obs = self.alpha_embd(actual_obs)
+
+        prob_emb_obs = emb_obs[:, :self.problem_size, :]
         
+        work_start = self.problem_size
+        work_end = work_start + self.num_work_heads * (2 * self.work_observation_window + 1)
+        work_emb_obs = emb_obs[:, work_start:work_end, :]
+        
+        state_start = work_end
+        state_end = state_start + self.num_state_heads * (2 * self.state_observation_window + 1)
+        state_emb_obs = emb_obs[:, state_start:state_end, :]
+        
+        result_start = state_end
+        result_end = result_start + self.num_result_heads * (2 * self.result_observation_window + 1)
+        result_emb_obs = emb_obs[:, result_start:result_end, :]
+
+
+        emb_obs_weight = self.pool_mlp(emb_obs).squeeze(-1)
+
+        prob_weights = torch.logsumexp(emb_obs_weight[:, :self.problem_size], dim=-1, keepdim=True)
+        prob_weights = torch.exp(emb_obs_weight[:, :self.problem_size] - prob_weights)
+        prob_pooled = (prob_emb_obs * prob_weights.unsqueeze(-1)).sum(dim=1)
+        
+        work_weights = torch.logsumexp(emb_obs_weight[:, self.problem_size:work_end], dim=-1, keepdim=True)
+        work_weights = torch.exp(emb_obs_weight[:, self.problem_size:work_end] - work_weights)
+        work_pooled = (work_emb_obs * work_weights.unsqueeze(-1)).sum(dim=1)
+        work_head_weights = work_weights.view(batch_sz, self.num_work_heads, 2 * self.work_observation_window + 1).sum(dim=2)
+        
+        state_weights = torch.logsumexp(emb_obs_weight[:, work_end:state_end], dim=-1, keepdim=True)
+        state_weights = torch.exp(emb_obs_weight[:, work_end:state_end] - state_weights)
+        state_pooled = (state_emb_obs * state_weights.unsqueeze(-1)).sum(dim=1)
+        state_head_weights = state_weights.view(batch_sz, self.num_state_heads, 2 * self.state_observation_window + 1).sum(dim=2)
+
+        result_weights = torch.logsumexp(emb_obs_weight[:, state_end:result_end], dim=-1, keepdim=True)
+        result_weights = torch.exp(emb_obs_weight[:, state_end:result_end] - result_weights)
+        result_pooled = (result_emb_obs * result_weights.unsqueeze(-1)).sum(dim=1)
+        result_head_weights = result_weights.view(batch_sz, self.num_result_heads, 2 * self.result_observation_window + 1).sum(dim=2)
+
+        sec_emb = self.sec_embd(self.sec_base.expand(batch_sz, -1, -1))
+        prob_sec_emb = sec_emb[:, 0, :].squeeze_(1)
+        work_sec_emb = sec_emb[:, 1, :].squeeze_(1)
+        state_sec_emb = sec_emb[:, 2, :].squeeze_(1)
+        result_sec_emb = sec_emb[:, 3, :].squeeze_(1)
+
+        tmp_head_weights = torch.cat([work_head_weights, state_head_weights, result_head_weights], dim=1)
+
+        tmp_head_emb = torch.cat([
+            i.sum(dim=1, keepdim=True) for i in torch.split((self.head_base.expand(batch_sz, -1) * tmp_head_weights), (self.num_work_heads, self.num_state_heads, self.num_result_heads), dim=1)
+        ], dim=0)
+
+        head_emb = self.head_idx_embd(tmp_head_emb)
+
+        work_head_emb = head_emb[:batch_sz, :]
+        state_head_emb = head_emb[batch_sz:2*batch_sz, :]
+        result_head_emb = head_emb[2*batch_sz:3*batch_sz, :]
+
+        tmp_tape_emb = torch.cat([
+            i.sum(dim=1, keepdim=True) for i in torch.split((head_ind * tmp_head_weights), (self.num_work_heads, self.num_state_heads, self.num_result_heads), dim=1)
+        ], dim=0)
+
+        tape_emb = self.tape_idx_embd(tmp_tape_emb)
+
+        work_tape_emb = tape_emb[:batch_sz, :]
+        state_tape_emb = tape_emb[batch_sz:2*batch_sz, :]
+        result_tape_emb = tape_emb[2*batch_sz:3*batch_sz, :]
+
+        prob_pooled += self.alpha_prob * prob_sec_emb
+
+        work_pooled += self.alpha_work * work_sec_emb + self.beta_work * work_head_emb + self.gamma_work * work_tape_emb
+
+        state_pooled += self.alpha_state * state_sec_emb + self.beta_state * state_head_emb + self.gamma_state * state_tape_emb
+
+        result_pooled += self.alpha_result * result_sec_emb + self.beta_result * result_head_emb + self.gamma_result * result_tape_emb
+
+        emb_obs = torch.cat([prob_pooled, work_pooled, state_pooled, result_pooled], dim=1).squeeze(-1)
+
+        return emb_obs
+
+
+    def encode_observations(self, observations, state=None):
+        # emb = self.embed(observations.sum(dim=1))
+        # features = self.proj(observations.float())
+        batch_sz = observations.shape[0]
+        device = observations.device
+
+        observations = observations.float()
+        actual_observations, head_indices = observations[:, self.num_heads:], observations[:, :self.num_heads]
+
+        emb_obs = self._efficient_emb_comp(actual_observations, head_indices, batch_sz, device)
+        emb_obs = self.norm(emb_obs)
+
+        features = self.proj(emb_obs)
+
         return features
 
     def decode_actions(self, hidden):

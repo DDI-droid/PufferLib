@@ -23,6 +23,9 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     
     env->nen_halt_penalty = unpack(kwargs, "nen_halt_penalty");
     env->invalid_output_penalty = unpack(kwargs, "invalid_output_penalty");
+    env->cont_rew_mul = unpack(kwargs, "cont_rew_mul");
+    env->cont_rew_div = unpack(kwargs, "cont_rew_div");
+    env->write_rew_multiplier = unpack(kwargs, "write_rew_multiplier");
     env->correctness_reward = unpack(kwargs, "correctness_reward");
     env->incorrectness_penalty = unpack(kwargs, "incorrectness_penalty");
 
@@ -46,6 +49,7 @@ static int my_log(PyObject* dict, Log* log)
     assign_to_dict(dict, "episode_length", log->episode_length);
     assign_to_dict(dict, "running_time", log->running_time);
     assign_to_dict(dict, "correctness", log->correctness);
+    assign_to_dict(dict, "work_writes", log->work_writes);
     assign_to_dict(dict, "n", log->n);
     return 0;
 }
