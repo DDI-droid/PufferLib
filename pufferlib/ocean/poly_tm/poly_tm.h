@@ -414,21 +414,21 @@ void c_step(PolyTM* env){
         float res = check_soln_correctness(env);
         float tmp_rew = auxilary_rewards(env);
         
-        // if (env->tape_result[0] == -1) {
-        //     env->rewards[0] -= env->invalid_output_penalty;
-        //     env->returns[0] -= env->invalid_output_penalty;
-        // }
+        if (env->tape_result[0] == -1) {
+            env->rewards[0] -= env->invalid_output_penalty;
+            env->returns[0] -= env->invalid_output_penalty;
+        }
             
-        env->rewards[0] += tmp_rew;
-        env->returns[0] += tmp_rew;
+        env->rewards[0] += res + tmp_rew;
+        env->returns[0] += res + tmp_rew;
         
         if (env->correct) {
             env->rewards[0] += env->correctness_reward;
             env->returns[0] += env->correctness_reward;
         } 
         else {
-            // env->rewards[0] -= env->incorrectness_penalty;
-            // env->returns[0] -= env->incorrectness_penalty;
+            env->rewards[0] -= env->incorrectness_penalty;
+            env->returns[0] -= env->incorrectness_penalty;
         }
         
         

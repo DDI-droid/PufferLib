@@ -1028,40 +1028,6 @@ class Drone(nn.Module):
         values = self.value(hidden)
         return logits, values
 
-class FastSelfAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0.0):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim, bias=False)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.dropout = dropout
-
-    def forward(self, x):
-        # x: (B, S, D)
-        B, S, D = x.shape
-        qkv = self.qkv_proj(x)                      # → (B, S, 3D)
-        q, k, v = qkv.chunk(3, dim=-1)              # each (B, S, D)
-        # reshape to (B, num_heads, S, head_dim)
-        q = q.view(B, S, self.num_heads, self.head_dim)
-        k = k.view(B, S, self.num_heads, self.head_dim)
-        v = v.view(B, S, self.num_heads, self.head_dim)
-
-        q_h = q.half()
-        k_h = k.half()
-        v_h = v.half()
-
-        out_h = F.scaled_dot_product_attention(
-            q_h, k_h, v_h,
-            attn_mask=None,
-            dropout_p=self.dropout,
-            is_causal=False,
-        )
-
-        out = out_h.float()
-        out = out.reshape(B, S, D)
-        return self.out_proj(out)
-
 class PolyTMLSTM(pufferlib.models.LSTMWrapper):
     def __init__(self, env, policy, input_size = 256, hidden_size = 256):
         super().__init__(env, policy, input_size, hidden_size)    
