@@ -12,40 +12,29 @@ class PolyTM(pufferlib.PufferEnv):
         render_mode="auto",
         log_interval=1,
         log_episodes=10,
-        work_tape_size=256,
-        state_tape_size=256,
-        result_tape_size=256,
+        work_tape_size=100,
+        state_tape_size=100,
+        result_tape_size=100,
         work_observation_window=16,
         state_observation_window=16,
         result_observation_window=16,
         tape_alphabet=10,
         move_head=10,
-        num_work_heads=5,
-        num_state_heads=2,
+        num_work_heads=3,
+        num_state_heads=1,
         num_result_heads=1,
         nen_halt_penalty=1.0,
         invalid_output_penalty=2.0,
         cont_rew_mul=5.0,
-        cont_rew_div=1.0,
-        write_rew_multiplier=1.0,
-        correctness_reward=10.0,
-        incorrectness_penalty=10.0,
+        write_rew_multiplier=10.0,
+        correctness_reward=20.0,
+        incorrectness_penalty=20.0,
+        step_rew_multiplier=0.5,
         max_steps = 300,
-        problem_size=2,
-        # max_a=4,
-        # max_i=50,
-        # max_u=50,
+        problem_size=4,
         buf=None,
         seed=0
         ):
-
-        # self.tape_size = tape_size
-        # self.observation_window = int(observation_window)
-        
-        # self.work_alphabet = int(work_alphabet)
-        # self.state_alphabet = int(state_alphabet)
-        # self.move_work = move_work
-        # self.move_state = move_state
         
         assert tape_alphabet < 255, "tape stores chars!!"
         
@@ -62,12 +51,6 @@ class PolyTM(pufferlib.PufferEnv):
         num_state_heads = int(num_state_heads)
         num_result_heads = int(num_result_heads)
         problem_size = int(problem_size)
-        
-
-        
-        # self.max_a = max_a
-        # self.max_i = max_i
-        # self.max_u = max_u
         
         self.num_obs = ((num_work_heads + num_state_heads + num_result_heads) + problem_size\
                                   + num_work_heads * (2 * work_observation_window + 1) + \
@@ -87,7 +70,7 @@ class PolyTM(pufferlib.PufferEnv):
         self.state_observation_window = state_observation_window
         self.result_observation_window = result_observation_window
 
-        self.num_actions = 3
+        self.num_actions = 4
         
         self.log_idx = 0
         
@@ -96,6 +79,7 @@ class PolyTM(pufferlib.PufferEnv):
         
         self.log_interval = log_interval
         self.log_episodes = log_episodes
+        self.logs = 0
         
         self.max_steps = max_steps
 
@@ -107,7 +91,7 @@ class PolyTM(pufferlib.PufferEnv):
         )
         
         self.single_action_space = gymnasium.spaces.MultiDiscrete(
-            [num_work_heads + num_state_heads + num_result_heads, tape_alphabet, 2 * move_head + 1],
+            [num_work_heads + num_state_heads + num_result_heads, 2, tape_alphabet + 1, 2 * move_head + 1],
             dtype=np.int32
         )
 
@@ -135,15 +119,12 @@ class PolyTM(pufferlib.PufferEnv):
             nen_halt_penalty=nen_halt_penalty,
             invalid_output_penalty=invalid_output_penalty,
             cont_rew_mul=cont_rew_mul,
-            cont_rew_div=cont_rew_div,
             write_rew_multiplier=write_rew_multiplier,
             correctness_reward=correctness_reward,
             incorrectness_penalty=incorrectness_penalty,
+            step_rew_multiplier=step_rew_multiplier,
             max_steps=max_steps,
-            problem_size=problem_size,
-            # max_a=self.max_a,
-            # max_i=self.max_i,
-            # max_u=self.max_u
+            problem_size=problem_size
         )
         
     def reset(self, seed=None):
@@ -157,13 +138,16 @@ class PolyTM(pufferlib.PufferEnv):
         self.tick += 1
         binding.vec_step(self.c_envs)
         
+        self.logs += sum(self.terminals) 
+
         info = []
-        if sum(self.terminals) >= self.log_episodes:
+        if self.logs >= self.log_episodes:
             log = binding.vec_log(self.c_envs)
             if log:
                 log['log_idx'] = self.log_idx
                 info.append(log)
                 self.log_idx += 1
+                self.logs = 0
 
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
             

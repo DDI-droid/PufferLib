@@ -33,6 +33,8 @@ struct Log{
     float running_time; // Time taken to solve current env instance
     float correctness; // Is the result of the oracle correct? 0-100
     float work_writes; // how much memory the tm uses
+    float write_corr_1;
+    float write_corr_2;
 
 
     float n; // Required as the last field 
@@ -71,10 +73,10 @@ struct PolyTM {
     float nen_halt_penalty;
     float invalid_output_penalty;
     float cont_rew_mul;
-    float cont_rew_div;
     float write_rew_multiplier;
     float correctness_reward;
     float incorrectness_penalty;
+    float step_rew_multiplier;
 
     int max_steps;
 
@@ -90,25 +92,6 @@ struct PolyTM {
     int problem_size;
 
     char* work_written;
-    // problem parameters
-    // int max_a;
-    // int max_i;
-    // int max_u;
-
-    // int num_a;
-    // int num_i;
-
-    //problem pointers
-    // int* utility;
-    
-    // int* problem;
-
-    // int* results;
-
-    // int* halt;
-
-    // int *precomputed_us;
-    // int *precomputed_um;
 
     bool ch_work;
     bool ch_state;
@@ -122,7 +105,7 @@ struct PolyTM {
     //tmp (optimizations mostly)
     char correct_tmp;
 
-    char correct;
+    bool correct;
 };
 
 //function prototypes
@@ -151,27 +134,14 @@ void init(PolyTM* env) {
     env->problem = (char*)calloc(env->problem_size, sizeof(char));
     env->work_written = (char*)calloc(env->work_tape_size, sizeof(char));
 
-    // env->problem = env->tape_work;
-    // env->utility =env->problem+2;
-
-    // env->results  = env->tape_work + env->tape_size - env->max_i - 1;
-    // env->halt = env->tape_work + env->tape_size - 1;
-
     env->returns = (float*)calloc(1, sizeof(float));
-
-    // env->precomputed_us= (int*)calloc(env->max_a * env->max_a, sizeof(int));
-    // env->precomputed_um = (int*)calloc(env->max_a * env->max_a, sizeof(int));
-
-    // assert((env->max_a < env->work_alphabet) && "max agents should be within work alphabet");
-    // assert((env->max_i < env->work_alphabet) && "max items should be within work alphabet");
-    // assert((env->max_u < env->work_alphabet) && "max utility should be within work alphabet");
 
     env->rng_state = ((uint64_t)(uintptr_t)env) ^ (uint64_t)time(NULL);
 }
 
 void allocate(PolyTM* env) {
     env->observations = (char*)calloc(OBS_LEN(env), sizeof(char));
-    env->actions = (int*)calloc(3, sizeof(int));
+    env->actions = (int*)calloc(4, sizeof(int));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
     init(env);
@@ -190,9 +160,6 @@ void free_initialized(PolyTM* env) {
     free(env->work_written);
 
     free(env->returns);
-
-    // free(env->precomputed_um);
-    // free(env->precomputed_us);
 }
 
 void free_allocated(PolyTM* env) {
@@ -203,10 +170,10 @@ void free_allocated(PolyTM* env) {
     c_close(env);
 }
 
-static inline void tape_window_to_obs(const char* tape, int head, char* dst, int w, int tape_size)
+static inline void tape_window_to_obs(const char* tape, int head_idx, char* dst, int w, int tape_size)
 {
-    int left = head - w;
-    int right = head + w;
+    int left = head_idx - w;
+    int right = head_idx + w;
 
     if (left < 0)
         left = 0;
@@ -218,7 +185,7 @@ static inline void tape_window_to_obs(const char* tape, int head, char* dst, int
         // printf("hits!!");
     }
 
-    int padL = w - (head - left);
+    int padL = w - (head_idx - left);
     int span = right - left + 1;
     int padR = (2 * w + 1) - (padL + span);
 
@@ -338,7 +305,7 @@ void c_reset(PolyTM* env) {
     // problem init
     env->correct_tmp = 0;
     for (int i = 0; i < env->problem_size; i++) {
-        env->problem[i] = (char)((rng_u32(&env->rng_state)) % env->tape_alphabet);
+        env->problem[i] = (char)(rng_u32(&env->rng_state) % env->tape_alphabet);
         env->correct_tmp = (char)((env->correct_tmp + env->problem[i]) % env->tape_alphabet);
     }
 
@@ -353,36 +320,7 @@ void c_reset(PolyTM* env) {
     env->ch_head_idx = -1;
     env->ch_tape_idx = -1;
 
-    env->correct = 0;
-
-    // memset(env->precomputed_um,  0, env->max_a * env->max_a * sizeof(int));
-    // memset(env->precomputed_us,  0, env->max_a * env->max_a * sizeof(int));
-
-    //Main problem init
-    //Generate a new problem instance
-    /* at the top of main() or vec_init() once per process */
-
-    // env->num_a = 2;
-    // env->num_i = rng_u32(&env->rng_state) % (env->max_i - 1) + 2;
-
-
-    // env->problem[0] = env->num_a;
-    // env->problem[1] = env->num_i;
-
-    // for (int i = 0; i < env->num_a * env->num_i; i++) {
-    //     env->utility[i] = rng_u32(&env->rng_state) % (env->max_u + 1);
-    // }
-
-
-    // for (int i = 0; i < env->num_a; i++)
-    // {
-    //     for (int j = 0; j < env->num_a; j++)
-    //     {
-    //         env->precomputed_um[i * env->max_a + j] = INT_MAX;
-    //     }
-    // }
-
-    // memset(env->observations, 0, OBS_LEN(env) * sizeof(int));
+    env->correct = false;
 
     compute_observations(env);
 }
@@ -404,28 +342,37 @@ void c_step(PolyTM* env){
 
         env->ch_tape_idx = env->work_heads[env->ch_head_idx];
 
-        env->tape_work[env->ch_tape_idx] = (char)env->actions[1];
+        if (env->actions[1] == 1)
+            env->tape_work[env->ch_tape_idx] = (char)env->actions[2] - 1;
 
-        env->work_heads[env->ch_head_idx] += env->actions[2] - env->move_head;
+        env->work_heads[env->ch_head_idx] += env->actions[3] - env->move_head;
         env->work_heads[env->ch_head_idx] = clampi(env->work_heads[env->ch_head_idx], 0, env->work_tape_size - 1);
 
         env->ch_work = true;
         env->ch_state = false;
         env->ch_result = false;
 
-        env->work_written[env->ch_tape_idx] = 1;
+        if (env->actions[1] == 1)
+        {
+            if (env->actions[2] == 0)
+                env->work_written[env->ch_tape_idx] = 0;
+            else
+                env->work_written[env->ch_tape_idx] = 1;
+        }
     }
     else if (env->actions[0] < env->num_work_heads + env->num_state_heads){
         env->ch_head_idx = env->actions[0] - env->num_work_heads;
 
         env->ch_tape_idx = env->state_heads[env->ch_head_idx];
 
-        env->tape_state[env->ch_tape_idx] = (char)env->actions[1];
+        if (env->actions[1] == 1)
+            env->tape_state[env->ch_tape_idx] = (char)env->actions[2] - 1;
 
-        env->state_heads[env->ch_head_idx] += env->actions[2] - env->move_head;
+        env->state_heads[env->ch_head_idx] += env->actions[3] - env->move_head;
         env->state_heads[env->ch_head_idx] = clampi(env->state_heads[env->ch_head_idx], 0, env->state_tape_size - 1);
 
-        wrote_halt = (env->actions[1] == 0);
+        if (env->actions[1] == 1)
+            wrote_halt = (env->actions[2] == 0);
 
         env->ch_work = false;
         env->ch_state = true;
@@ -436,9 +383,10 @@ void c_step(PolyTM* env){
 
         env->ch_tape_idx = env->result_heads[env->ch_head_idx];
 
-        env->tape_result[env->ch_tape_idx] = (char)env->actions[1];
+        if (env->actions[1] == 1)
+            env->tape_result[env->ch_tape_idx] = (char)env->actions[2] - 1;
 
-        env->result_heads[env->ch_head_idx] += env->actions[2] - env->move_head;
+        env->result_heads[env->ch_head_idx] += env->actions[3] - env->move_head;
         env->result_heads[env->ch_head_idx] = clampi(env->result_heads[env->ch_head_idx], 0, env->result_tape_size- 1);
 
         env->ch_work = false;
@@ -450,54 +398,37 @@ void c_step(PolyTM* env){
         assert(!"Head index out of range");
     }
 
-    //
-
-    // int correct = (env->problem[0] + env->problem[1]) % env->tape_alphabet;
-    // int written = env->tape_result[0];
-
-    // if (written == -1)
-    // {
-    //     // env->rewards[0] -= 2.0f;
-    //     // env->returns[0] -= 2.0f;
-    // }
-    // else
-    // {
-    //     int delta = abs(correct - written) % env->tape_alphabet;
-
-    //     float bonus = delta * 0.1f; // range 0.0 … +1.0
-        
-    //     env->rewards[0] += bonus;
-    //     env->returns[0] += bonus;
-    // }
-
     env->terminals[0] = wrote_halt ? 1 : 0;
 
+    float step_rew = env->step_rew_multiplier * auxilary_rewards(env);
+    env->rewards[0] += step_rew;
+    env->returns[0] += step_rew;
+
     if ((!env->terminals[0]) && (env->tick > env->max_steps)) {
-        env->rewards[0] -= env->nen_halt_penalty;
-        env->returns[0] -= env->nen_halt_penalty;
+        // env->rewards[0] -= env->nen_halt_penalty;
+        // env->returns[0] -= env->nen_halt_penalty;
+        env->terminals[0] = 1;
     }
 
     if (env->terminals[0]) {
         float res = check_soln_correctness(env);
         float tmp_rew = auxilary_rewards(env);
         
-        if (env->tape_result[0] == -1) {
-            env->correct = 0;
-            env->rewards[0] -= env->invalid_output_penalty;
-            env->returns[0] -= env->invalid_output_penalty;
-        }
-        else{
-            env->rewards[0] += res + tmp_rew;
-            env->returns[0] += res + tmp_rew;
-        }
+        // if (env->tape_result[0] == -1) {
+        //     env->rewards[0] -= env->invalid_output_penalty;
+        //     env->returns[0] -= env->invalid_output_penalty;
+        // }
+            
+        env->rewards[0] += tmp_rew;
+        env->returns[0] += tmp_rew;
         
         if (env->correct) {
             env->rewards[0] += env->correctness_reward;
             env->returns[0] += env->correctness_reward;
         } 
         else {
-            env->rewards[0] -= env->incorrectness_penalty;
-            env->returns[0] -= env->incorrectness_penalty;
+            // env->rewards[0] -= env->incorrectness_penalty;
+            // env->returns[0] -= env->incorrectness_penalty;
         }
         
         
@@ -508,81 +439,64 @@ void c_step(PolyTM* env){
 
         env->log.running_time += (float)env->tick;
         env->log.correctness += env->correct ? 100.0f : 0.0f; 
-        //env->log.work_writes += (done in the aux rew function)
+        
+        for (int i = 0; i < env->work_tape_size; ++i)
+        {
+            env->log.work_writes += (env->work_written[i] == 1 ? 1.0f : 0.0f);
+        }
+
+        if (env->tape_work[0] != -1)
+            env->log.write_corr_1 += env->tape_work[0] == env->problem[0] + env->problem[1] ? 1.0f : 0.0f;
+        else
+            env->log.write_corr_1 += 0.0f;
+
+        if (env->tape_work[1] != -1)
+            env->log.write_corr_2 += env->tape_work[1] == env->problem[2] + env->problem[3] ? 1.0f : 0.0f;
+        else
+            env->log.write_corr_2 += 0.0f;
+
         env->log.n += 1.0f;
 
         c_reset(env);
     }
     
-
     compute_observations(env);
 }
 
-// //Main problem correctness
-// bool check_soln_correctness(PolyTM* env) {
-//     // checks if the allocation if EFX
-
-//     for (int i = 0; i < env->num_a; i++) {
-//         for (int j = 0; j < env->num_i; j++){
-
-//             int id = env->results[j];
-
-//             if (id >= env->num_a) {
-//                 // Invalid item allocation
-//                 return false;
-//             }
-
-//             env->precomputed_us[i * env->max_a + id] += env->utility[env->max_i * i + j];
-
-//             env->precomputed_um[i * env->max_a + id] = min(env->precomputed_um[i * env->max_a + id], env->utility[env->max_i * i + j]);
-//         }
-//     }
-
-//     for (int i = 0; i < env->num_a; i++) {
-//         for (int j = 0; j < env->num_a; j++) {
-//             if (i == j) continue;
-
-//             if (env->precomputed_us[i * env->max_a + i] < env->precomputed_us[i * env->max_a + j] -  env->precomputed_um[i * env->max_a + j]) {
-//                 // Agent i has less utility than agent j, so the allocation is not EFX
-//                 return false;
-//             }
-//         }
-//     }
-
-//     // If we reach here, the allocation is EFX
-
-//     return true;
-// }
-
 float check_soln_correctness(PolyTM* env)
 {
-    if (env->tape_result[0] == env->correct_tmp)
+    if (env->tape_result[0] == -1)
     {
-        env->correct = 1;
+        env->correct = false;
+        return 0;
+    }
+    else if (env->tape_result[0] == env->correct_tmp)
+    {
+        env->correct = true;
+        return env->cont_rew_mul;
     }
     else{
-        env->correct = 0;
+        env->correct = false;
+        return env->cont_rew_mul - abs(env->tape_result[0] - env->correct_tmp);
     }
-
-    return env->cont_rew_mul - abs(env->tape_result[0] - env->correct_tmp) / env->cont_rew_div;
-
 }
 
 float auxilary_rewards(PolyTM* env)
 {
-    for (int i = 0; i < env->work_tape_size; ++i)
-    {
-        env->log.work_writes += (env->work_written[i] == 1 ? 1.0f : 0.0f);
-    }
-
-    float rew = (env->write_rew_multiplier - abs(env->tape_work[0] - env->problem[0] - env->problem[1])) + (env->write_rew_multiplier - abs(env->tape_work[1] - env->problem[2] - env->problem[3]));
+    float rew = 0;
+    
+    if (env->tape_work[0] != -1)
+        rew += env->write_rew_multiplier - abs(env->tape_work[0] - env->problem[0] - env->problem[1]);
+     
+    if (env->tape_work[1] != -1)    
+        rew += env->write_rew_multiplier - abs(env->tape_work[1] - env->problem[2] - env->problem[3]);
 
     return rew;
 }
 
 void c_render(PolyTM* env)
 {
-    ;
+    //TODO ;-;: gud render here :)
 }
 
 void c_close(PolyTM* env) {

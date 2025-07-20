@@ -3,6 +3,7 @@ from typing import Any, Tuple
 
 from gymnasium import spaces
 
+import pufferlib.pytorch
 from torch import nn
 import torch
 from torch.distributions.normal import Normal
@@ -1123,7 +1124,7 @@ class PolyTM(nn.Module):
         self.beta_result = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
         self.gamma_result = nn.Parameter(torch.randn(1) * 1.0 + 1.0)
 
-        self.norm = nn.LayerNorm(4 * self.alpha_emb_dim)
+        self.norm = nn.LayerNorm(hidden_size)
 
         self.pool_mlp = nn.Sequential(
             nn.Linear(self.alpha_emb_dim, self.alpha_emb_dim),
@@ -1132,8 +1133,9 @@ class PolyTM(nn.Module):
         )
 
         self.proj = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(self.alpha_emb_dim * 4, hidden_size), std=0.01),
-            nn.GELU()
+            pufferlib.pytorch.layer_init(nn.Linear(self.num_observations, hidden_size), std=0.01),
+            nn.GELU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size))
         )
 
 
@@ -1170,37 +1172,30 @@ class PolyTM(nn.Module):
         sections = {}
         start = 0
         
-        # Problem section
         sections['problem'] = (start, start + self.problem_size)
         start += self.problem_size
 
-        #work head idx section
         sections['work_head_idx'] = (start, start + self.num_work_heads)
         start += self.num_work_heads
         
-        #state head idx section
         sections['state_head_idx'] = (start, start + self.num_state_heads)
         start += self.num_state_heads
 
-        #result head idx section
         sections['result_head_idx'] = (start, start + self.num_result_heads)
         start += self.num_result_heads
 
-        # Work head sections
         work_size = 2 * self.work_observation_window + 1
         sections['work_heads'] = []
         for i in range(self.num_work_heads):
             sections['work_heads'].append((start, start + work_size))
             start += work_size
             
-        # State head sections
         state_size = 2 * self.state_observation_window + 1
         sections['state_heads'] = []
         for i in range(self.num_state_heads):
             sections['state_heads'].append((start, start + state_size))
             start += state_size
             
-        # Result head sections
         result_size = 2 * self.result_observation_window + 1
         sections['result_heads'] = []
         for i in range(self.num_result_heads):
@@ -1306,12 +1301,13 @@ class PolyTM(nn.Module):
         device = observations.device
 
         observations = observations.float()
-        actual_observations, head_indices = observations[:, self.num_heads:], observations[:, :self.num_heads]
+        # actual_observations, head_indices = observations[:, self.num_heads:], observations[:, :self.num_heads]
 
-        emb_obs = self._efficient_emb_comp(actual_observations, head_indices, batch_sz, device)
-        emb_obs = self.norm(emb_obs)
+        # emb_obs = self._efficient_emb_comp(actual_observations, head_indices, batch_sz, device)
+        # emb_obs = self.norm(emb_obs)
 
-        features = self.proj(emb_obs)
+        features = self.proj(observations)
+        features = self.norm(features)
 
         return features
 
