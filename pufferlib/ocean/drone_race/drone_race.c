@@ -1,8 +1,8 @@
-// Standalone C demo for Drone environment
+// Standalone C demo for DroneRace environment
 // Compile using: ./scripts/build_ocean.sh drone [local|fast]
 // Run with: ./drone
 
-#include "drone.h"
+#include "drone_race.h"
 #include "puffernet.h"
 #include <time.h>
 
@@ -88,7 +88,7 @@ void forward_linearcontlstm(LinearContLSTM *net, float *observations, float *act
     }
 }
 
-void generate_dummy_actions(Drone *env) {
+void generate_dummy_actions(DroneRace *env) {
     // Generate random floats in [-1, 1] range
     env->actions[0] = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
     env->actions[1] = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
@@ -98,14 +98,14 @@ void generate_dummy_actions(Drone *env) {
 
 #ifdef __EMSCRIPTEN__
 typedef struct {
-    Drone *env;
+    DroneRace *env;
     LinearContLSTM *net;
     Weights *weights;
 } WebRenderArgs;
 
 void emscriptenStep(void *e) {
     WebRenderArgs *args = (WebRenderArgs *)e;
-    Drone *env = args->env;
+    DroneRace *env = args->env;
     LinearContLSTM *net = args->net;
 
     forward_linearcontlstm(net, env->observations, env->actions);
@@ -120,7 +120,7 @@ WebRenderArgs *web_args = NULL;
 int main() {
     srand(time(NULL)); // Seed random number generator
 
-    Drone *env = calloc(1, sizeof(Drone));
+    DroneRace *env = calloc(1, sizeof(DroneRace));
     env->max_moves = 1000;
     env->max_rings = 10;
 

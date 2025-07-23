@@ -129,7 +129,7 @@ MAKE_FUNCTIONS = {
     'cartpole': 'Cartpole',
     'moba': 'Moba',
     'boids': 'Boids',
-    'drone': 'Drone',
+    'drone_race': 'DroneRace',
     'drone_swarm': 'DroneSwarm',
     'nmmo3': 'NMMO3',
     'snake': 'Snake',

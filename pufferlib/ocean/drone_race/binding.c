@@ -1,6 +1,6 @@
-#include "drone.h"
+#include "drone_race.h"
 
-#define Env Drone
+#define Env DroneRace
 #include "../env_binding.h"
 
 static int my_init(Env *env, PyObject *args, PyObject *kwargs) {

@@ -2,9 +2,9 @@ import numpy as np
 import gymnasium
 
 import pufferlib
-from pufferlib.ocean.drone import binding
+from pufferlib.ocean.drone_race import binding
 
-class Drone(pufferlib.PufferEnv):
+class DroneRace(pufferlib.PufferEnv):
     def __init__(
         self,
         num_envs=16,
@@ -76,7 +76,7 @@ class Drone(pufferlib.PufferEnv):
         binding.vec_close(self.c_envs)
 
 def test_performance(timeout=10, atn_cache=1024):
-    env = Drone(num_envs=1000)
+    env = DroneRace(num_envs=1000)
     env.reset()
     tick = 0
 
