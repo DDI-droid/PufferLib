@@ -122,9 +122,11 @@ int main() {
 
     DroneSwarm *env = calloc(1, sizeof(DroneSwarm));
     env->num_agents = 64;
+    env->max_rings = 10;
     env->task = TASK_ORBIT;
+    init(env);
 
-    size_t obs_size = 28;
+    size_t obs_size = 41;
     size_t act_size = 4;
     env->observations = (float *)calloc(env->num_agents * obs_size, sizeof(float));
     env->actions = (float *)calloc(env->num_agents * act_size, sizeof(float));

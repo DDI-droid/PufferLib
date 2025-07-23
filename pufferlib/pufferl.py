@@ -491,7 +491,7 @@ class PuffeRL:
         self.utilization.stop()
         model_path = self.save_checkpoint()
         run_id = self.logger.run_id
-        path = os.path.join(self.config['data_dir'], f'{run_id}.pt')
+        path = os.path.join(self.config['data_dir'], f'{self.config["env"]}_{run_id}.pt')
         shutil.copy(model_path, path)
         return path
 
@@ -501,11 +501,11 @@ class PuffeRL:
                return
  
         run_id = self.logger.run_id
-        path = os.path.join(self.config['data_dir'], run_id)
+        path = os.path.join(self.config['data_dir'], f'{self.config["env"]}_{run_id}')
         if not os.path.exists(path):
             os.makedirs(path)
 
-        model_name = f'model_{self.epoch:06d}.pt'
+        model_name = f'model_{self.config["env"]}_{self.epoch:06d}.pt'
         model_path = os.path.join(path, model_name)
         if os.path.exists(model_path):
             return model_path
@@ -878,7 +878,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
         os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
 
     vecenv = vecenv or load_env(env_name, args)
-    policy = policy or load_policy(args, vecenv)
+    policy = policy or load_policy(args, vecenv, env_name)
 
     if 'LOCAL_RANK' in os.environ:
         args['train']['device'] = torch.cuda.current_device()
@@ -938,7 +938,7 @@ def eval(env_name, args=None, vecenv=None, policy=None):
     args['vec'] = dict(backend=backend, num_envs=1)
     vecenv = vecenv or load_env(env_name, args)
 
-    policy = policy or load_policy(args, vecenv)
+    policy = policy or load_policy(args, vecenv, env_name)
     ob, info = vecenv.reset()
     driver = vecenv.driver_env
     num_agents = vecenv.observation_space.shape[0]
@@ -1067,7 +1067,7 @@ def load_env(env_name, args):
     make_env = env_module.env_creator(env_name)
     return pufferlib.vector.make(make_env, env_kwargs=args['env'], **args['vec'])
 
-def load_policy(args, vecenv):
+def load_policy(args, vecenv, env_name=''):
     package = args['package']
     module_name = 'pufferlib.ocean' if package == 'ocean' else f'pufferlib.environments.{package}'
     env_module = importlib.import_module(module_name)
@@ -1098,7 +1098,7 @@ def load_policy(args, vecenv):
 
     load_path = args['load_model_path']
     if load_path == 'latest':
-        load_path = max(glob.glob("experiments/*.pt"), key=os.path.getctime)
+        load_path = max(glob.glob(f"experiments/{env_name}*.pt"), key=os.path.getctime)
 
     if load_path is not None:
         state_dict = torch.load(load_path, map_location=device)
@@ -1151,24 +1151,19 @@ def load_config(env_name):
             raise pufferlib.APIUsageError('No config for env_name {}'.format(env_name))
 
     # Dynamic help menu from config
-    def auto_type(value):
-        """Type inference for numeric args that use 'auto' as a default value"""
-        if value == 'auto': return value
-        if value.isnumeric(): return int(value)
-        return float(value)
+    def puffer_type(value):
+        try:
+            return ast.literal_eval(value)
+        except:
+            return value
 
     for section in p.sections():
         for key in p[section]:
-            try:
-                value = ast.literal_eval(p[section][key])
-            except:
-                value = p[section][key]
-
             fmt = f'--{key}' if section == 'base' else f'--{section}.{key}'
             parser.add_argument(
                 fmt.replace('_', '-'),
-                default=value,
-                type=auto_type if value == 'auto' else type(value)
+                default=puffer_type(p[section][key]),
+                type=puffer_type
             )
 
     parser.add_argument('-h', '--help', default=argparse.SUPPRESS,
