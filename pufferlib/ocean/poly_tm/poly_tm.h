@@ -17,7 +17,7 @@ An Env for learning polynomial time oracles in Pufferlib.
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 
-#define OBS_LEN(env) ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->problem_size + \
+#define OBS_LEN(env) ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + \
                                         env->num_work_heads * (2 * env->work_observation_window + 1) + \
                                         env->num_state_heads * (2 * env->state_observation_window + 1) + \
                                         env->num_result_heads * (2 * env->result_observation_window + 1))
@@ -100,8 +100,6 @@ struct PolyTM {
     int ch_head_idx;
     int ch_tape_idx;
 
-    uint64_t rng_state;
-
     //tmp (optimizations mostly)
     char correct_tmp;
 
@@ -114,14 +112,6 @@ float auxilary_rewards(PolyTM*);
 
 static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi: v; }
 
-static inline uint32_t rng_u32(uint64_t* state)
-{
-    uint64_t z = (*state += 0x9e3779b97f4a7c15ull);
-    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-    return (uint32_t)(z ^ (z >> 31));
-}
-
 void init(PolyTM* env) {
     env->tape_work = (char*)calloc(env->work_tape_size, sizeof(char));
     env->tape_state = (char*)calloc(env->state_tape_size, sizeof(char));
@@ -131,12 +121,10 @@ void init(PolyTM* env) {
     env->state_heads = (int*)calloc(env->num_state_heads, sizeof(int));
     env->result_heads = (int*)calloc(env->num_result_heads, sizeof(int));
 
-    env->problem = (char*)calloc(env->problem_size, sizeof(char));
+    env->problem = env->tape_work;
     env->work_written = (char*)calloc(env->work_tape_size, sizeof(char));
 
     env->returns = (float*)calloc(1, sizeof(float));
-
-    env->rng_state = ((uint64_t)(uintptr_t)env) ^ (uint64_t)time(NULL);
 }
 
 void allocate(PolyTM* env) {
@@ -156,7 +144,6 @@ void free_initialized(PolyTM* env) {
     free(env->state_heads);
     free(env->result_heads);
     
-    free(env->problem);
     free(env->work_written);
 
     free(env->returns);
@@ -198,13 +185,13 @@ void compute_observations(PolyTM* env) {
 
     if (env->ch_work)
     {
-        tape_window_to_obs(env->tape_work, env->work_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->problem_size + env->ch_head_idx * (2 * env->work_observation_window + 1)), env->work_observation_window, env->work_tape_size);
+        tape_window_to_obs(env->tape_work, env->work_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->ch_head_idx * (2 * env->work_observation_window + 1)), env->work_observation_window, env->work_tape_size);
 
         for (int i = 0; i < env->num_work_heads; i++)
         {
             if ((i != env->ch_head_idx) && (abs(env->ch_tape_idx - env->work_heads[i]) <= env->work_observation_window))
             {
-                int tmp_id = (env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->problem_size + i * (2 * env->work_observation_window + 1) + env->work_observation_window;
+                int tmp_id = (env->num_work_heads + env->num_state_heads + env->num_result_heads) + i * (2 * env->work_observation_window + 1) + env->work_observation_window;
                 
                 env->observations[tmp_id + env->ch_tape_idx - env->work_heads[i]] = env->tape_work[env->ch_tape_idx];
 
@@ -215,13 +202,13 @@ void compute_observations(PolyTM* env) {
     }
     else if(env->ch_state)
     {
-        tape_window_to_obs(env->tape_state, env->state_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->problem_size + env->num_work_heads * (2 * env->work_observation_window + 1) + env->ch_head_idx * (2 * env->state_observation_window + 1)), env->state_observation_window, env->state_tape_size);
+        tape_window_to_obs(env->tape_state, env->state_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->num_work_heads * (2 * env->work_observation_window + 1) + env->ch_head_idx * (2 * env->state_observation_window + 1)), env->state_observation_window, env->state_tape_size);
 
         for (int i = 0; i < env->num_state_heads; i++)
         {
             if ((i != env->ch_head_idx) && (abs(env->ch_tape_idx - env->state_heads[i]) <= env->state_observation_window))
             {
-                int tmp_id = (env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->problem_size + env->num_work_heads * (2 * env->work_observation_window + 1) + i * (2 * env->state_observation_window + 1) + env->state_observation_window;
+                int tmp_id = (env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->num_work_heads * (2 * env->work_observation_window + 1) + i * (2 * env->state_observation_window + 1) + env->state_observation_window;
 
                 env->observations[tmp_id + env->ch_tape_idx - env->state_heads[i]] = env->tape_state[env->ch_tape_idx];
             }
@@ -231,13 +218,13 @@ void compute_observations(PolyTM* env) {
     }
     else if(env->ch_result)
     {
-        tape_window_to_obs(env->tape_result, env->result_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->problem_size + env->num_work_heads * (2 * env->work_observation_window + 1) + env->num_state_heads * (2 * env->state_observation_window + 1) + env->ch_head_idx * (2 * env->result_observation_window + 1)), env->result_observation_window, env->result_tape_size);
+        tape_window_to_obs(env->tape_result, env->result_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->num_work_heads * (2 * env->work_observation_window + 1) + env->num_state_heads * (2 * env->state_observation_window + 1) + env->ch_head_idx * (2 * env->result_observation_window + 1)), env->result_observation_window, env->result_tape_size);
 
         for (int i = 0; i < env->num_result_heads; i++)
         {
             if ((i != env->ch_head_idx) && (abs(env->ch_tape_idx - env->result_heads[i]) <= env->result_observation_window))
             {
-                int tmp_id = (env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->problem_size + env->num_work_heads * (2 * env->work_observation_window + 1) + env->num_state_heads * (2 * env->state_observation_window + 1) + i * (2 * env->result_observation_window + 1) + env->result_observation_window;
+                int tmp_id = (env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->num_work_heads * (2 * env->work_observation_window + 1) + env->num_state_heads * (2 * env->state_observation_window + 1) + i * (2 * env->result_observation_window + 1) + env->result_observation_window;
 
                 env->observations[tmp_id + env->ch_tape_idx - env->result_heads[i]] = env->tape_result[env->ch_tape_idx];
             }
@@ -264,8 +251,6 @@ void compute_observations(PolyTM* env) {
             env->observations[consumed++] = (char)env->result_heads[i];
         }
 
-        memcpy(env->observations + consumed, env->problem, env->problem_size * sizeof(char));
-        consumed += env->problem_size;
 
         for (int i = 0; i < env->num_work_heads; i++)
         {
@@ -302,10 +287,11 @@ void c_reset(PolyTM* env) {
     memset(env->state_heads, 0, env->num_state_heads * sizeof(int));
     memset(env->result_heads, 0, env->num_result_heads * sizeof(int));
 
+    srand(time(NULL));
     // problem init
     env->correct_tmp = 0;
     for (int i = 0; i < env->problem_size; i++) {
-        env->problem[i] = (char)(rng_u32(&env->rng_state) % env->tape_alphabet);
+        env->problem[i] = (char)(rand() % env->tape_alphabet);
         env->correct_tmp = (char)((env->correct_tmp + env->problem[i]) % env->tape_alphabet);
     }
 
@@ -342,7 +328,7 @@ void c_step(PolyTM* env){
 
         env->ch_tape_idx = env->work_heads[env->ch_head_idx];
 
-        if (env->actions[1] == 1)
+        if ((env->actions[1] == 1) && (env->ch_tape_idx >= env->problem_size))
             env->tape_work[env->ch_tape_idx] = (char)env->actions[2] - 1;
 
         env->work_heads[env->ch_head_idx] += env->actions[3] - env->move_head;
@@ -352,7 +338,7 @@ void c_step(PolyTM* env){
         env->ch_state = false;
         env->ch_result = false;
 
-        if (env->actions[1] == 1)
+        if ((env->actions[1] == 1) && (env->ch_tape_idx >= env->problem_size))
         {
             if (env->actions[2] == 0)
                 env->work_written[env->ch_tape_idx] = 0;
@@ -400,9 +386,9 @@ void c_step(PolyTM* env){
 
     env->terminals[0] = wrote_halt ? 1 : 0;
 
-    float step_rew = env->step_rew_multiplier * auxilary_rewards(env);
-    env->rewards[0] += step_rew;
-    env->returns[0] += step_rew;
+    // float step_rew = env->step_rew_multiplier * auxilary_rewards(env);
+    // env->rewards[0] += step_rew;
+    // env->returns[0] += step_rew;
 
     if ((!env->terminals[0]) && (env->tick > env->max_steps)) {
         // env->rewards[0] -= env->nen_halt_penalty;
@@ -411,24 +397,27 @@ void c_step(PolyTM* env){
     }
 
     if (env->terminals[0]) {
-        float res = check_soln_correctness(env);
+        // float res = check_soln_correctness(env);
         float tmp_rew = auxilary_rewards(env);
         
-        if (env->tape_result[0] == -1) {
-            env->rewards[0] -= env->invalid_output_penalty;
-            env->returns[0] -= env->invalid_output_penalty;
-        }
+        // if (env->tape_result[0] == -1) {
+        //     env->rewards[0] -= env->invalid_output_penalty;
+        //     env->returns[0] -= env->invalid_output_penalty;
+        // }
             
-        env->rewards[0] += res + tmp_rew;
-        env->returns[0] += res + tmp_rew;
+        env->rewards[0] += tmp_rew;
+        env->returns[0] += tmp_rew;
+
+        // env->rewards[0] += env->max_steps - env->tick;
+        // env->returns[0] += env->max_steps - env->tick;
         
         if (env->correct) {
-            env->rewards[0] += env->correctness_reward;
-            env->returns[0] += env->correctness_reward;
+            // env->rewards[0] += env->correctness_reward;
+            // env->returns[0] += env->correctness_reward;
         } 
         else {
-            env->rewards[0] -= env->incorrectness_penalty;
-            env->returns[0] -= env->incorrectness_penalty;
+            // env->rewards[0] -= env->incorrectness_penalty;
+            // env->returns[0] -= env->incorrectness_penalty;
         }
         
         
@@ -445,13 +434,13 @@ void c_step(PolyTM* env){
             env->log.work_writes += (env->work_written[i] == 1 ? 1.0f : 0.0f);
         }
 
-        if (env->tape_work[0] != -1)
-            env->log.write_corr_1 += env->tape_work[0] == env->problem[0] + env->problem[1] ? 1.0f : 0.0f;
+        if (env->tape_work[4] != -1)
+            env->log.write_corr_1 += (env->tape_work[4] == (env->problem[0] + env->problem[1]) % env->tape_alphabet) ? 100.0f : 0.0f;
         else
             env->log.write_corr_1 += 0.0f;
 
-        if (env->tape_work[1] != -1)
-            env->log.write_corr_2 += env->tape_work[1] == env->problem[2] + env->problem[3] ? 1.0f : 0.0f;
+        if (env->tape_work[5] != -1)
+            env->log.write_corr_2 += (env->tape_work[5] == (env->problem[2] + env->problem[3]) % env->tape_alphabet) ? 100.0f : 0.0f;
         else
             env->log.write_corr_2 += 0.0f;
 
@@ -485,11 +474,11 @@ float auxilary_rewards(PolyTM* env)
 {
     float rew = 0;
     
-    if (env->tape_work[0] != -1)
-        rew += env->write_rew_multiplier - abs(env->tape_work[0] - env->problem[0] - env->problem[1]);
+    if (env->tape_work[4] == (env->problem[0] + env->problem[1]) % env->tape_alphabet)
+        rew += env->write_rew_multiplier;
      
-    if (env->tape_work[1] != -1)    
-        rew += env->write_rew_multiplier - abs(env->tape_work[1] - env->problem[2] - env->problem[3]);
+    if (env->tape_work[5] == (env->problem[2] + env->problem[3]) % env->tape_alphabet)    
+        rew += env->write_rew_multiplier;
 
     return rew;
 }

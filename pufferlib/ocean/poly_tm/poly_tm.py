@@ -52,8 +52,8 @@ class PolyTM(pufferlib.PufferEnv):
         num_result_heads = int(num_result_heads)
         problem_size = int(problem_size)
         
-        self.num_obs = ((num_work_heads + num_state_heads + num_result_heads) + problem_size\
-                                  + num_work_heads * (2 * work_observation_window + 1) + \
+        self.num_obs = ((num_work_heads + num_state_heads + num_result_heads) + \
+                                    num_work_heads * (2 * work_observation_window + 1) + \
                                     num_state_heads * (2 * state_observation_window + 1) + \
                                     num_result_heads * (2 * result_observation_window + 1))
         
