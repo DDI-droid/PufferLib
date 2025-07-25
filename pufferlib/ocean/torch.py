@@ -1025,3 +1025,102 @@ class Drone(nn.Module):
 
         values = self.value(hidden)
         return logits, values
+    
+class TableTransformerLSTM(pufferlib.models.LSTMWrapper):
+    def __init__(self, env, policy, input_size = 256, hidden_size = 256):
+        super().__init__(env, policy, input_size, hidden_size)
+
+class TableTransformer(nn.Module):
+    def __init__(self, env, hidden_size=256, **kwargs):
+        super().__init__()
+        self.hidden_size = hidden_size
+
+        self.is_continuous = False
+
+
+        self.n_observations = env.single_observation_space.shape[0]
+
+        self.proj = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.n_observations, hidden_size), std=0.01),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+        )
+
+        self.atn_dim = env.single_action_space.nvec.tolist()
+        self.actor = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, sum(self.atn_dim)), std=0.01
+        )
+
+        self.value_fn = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size), std=0.01),
+            nn.SiLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=0.01),
+        )
+
+        if False:
+            pass
+        else:
+            self.word_boxes_path = "/media/dpa/data/Anshul/Ocean_current/pufferlib/resources/table_transformer/table_p1_words.txt"
+            
+            with open(self.word_boxes_path, "r") as f:
+                self.word_boxes = [float(coord) for coord in f.readlines()[0].split(', ')]
+
+            self.word_boxes = torch.tensor(self.word_boxes, dtype=torch.float32)
+
+            self.register_buffer("word_boxes_buffer", self.word_boxes)
+
+            self.word_boxes = self.word_boxes.to(torch.device("cuda"))
+
+            self.pre_comp_word_boxes = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(4, 2), std=0.01),
+                nn.SiLU()
+            )
+
+            self.pre_comp_word_boxes_proj = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(self.word_boxes.shape[0] // 2, hidden_size), std=0.01),
+                nn.LayerNorm(hidden_size),
+                nn.SiLU()
+            )
+
+            self.hidden_feature_proj = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(2 * hidden_size, hidden_size), std=0.01),
+                nn.LayerNorm(hidden_size),
+                nn.ReLU()
+            )
+            self.ln_l = nn.LayerNorm(hidden_size)
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward_train(self, x, state=None):
+        return self.forward(x, state)
+
+    def encode_observations(self, observations, state=None):
+        features = self.proj(observations.float())
+
+        if hasattr(self, 'word_boxes'):
+            word_boxes = self.word_boxes.view(1, -1, 4)
+            word_boxes_f = self.pre_comp_word_boxes(word_boxes)
+            word_boxes_f = einops.rearrange(word_boxes_f, 'b h w -> b (h w)')
+            word_boxes_f = self.pre_comp_word_boxes_proj(word_boxes_f)
+
+            word_boxes_f = word_boxes_f.expand(features.shape[0], -1)
+
+            hidden_features = torch.cat([features, word_boxes_f], dim=-1)
+
+            hidden_features = self.hidden_feature_proj(hidden_features)
+
+            features = self.ln_l(features + hidden_features)
+
+        return features
+
+    def decode_actions(self, flat_hidden):
+        value = self.value_fn(flat_hidden)
+
+        action = self.actor(flat_hidden)
+        action = torch.split(action, self.atn_dim, dim=1)
+
+
+        return action, value
