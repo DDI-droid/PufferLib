@@ -153,6 +153,7 @@ MAKE_FUNCTIONS = {
     'pacman': 'Pacman',
     'checkers': 'Checkers',
     'asteroids': 'Asteroids',
+    'table_ocr': 'TableOCR',
     'spaces': make_spaces,
     'multiagent': make_multiagent,
 }

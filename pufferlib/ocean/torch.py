@@ -18,6 +18,9 @@ Recurrent = pufferlib.models.LSTMWrapper
 from pufferlib.pytorch import layer_init, _nativize_dtype, nativize_tensor
 import numpy as np
 
+import einops
+from einops import rearrange
+from torch.nn.attention import sdpa_kernel, SDPBackend
 
 class Boids(nn.Module):
     def __init__(self, env, cnn_channels=32, hidden_size=128, **kwargs):
@@ -1026,68 +1029,314 @@ class Drone(nn.Module):
         values = self.value(hidden)
         return logits, values
     
-class TableTransformerLSTM(pufferlib.models.LSTMWrapper):
+class TableOCRLSTM(pufferlib.models.LSTMWrapper):
     def __init__(self, env, policy, input_size = 256, hidden_size = 256):
         super().__init__(env, policy, input_size, hidden_size)
 
-class TableTransformer(nn.Module):
-    def __init__(self, env, hidden_size=256, **kwargs):
+class ResidualLN(nn.Module):
+    def __init__(self, module: nn.Module) -> None:
         super().__init__()
+        
+        self.fn = module
+        self.ln = nn.LayerNorm(module.out_dim)
+    
+    def forward(self, x, *args, **kwargs) -> torch.Tensor:
+        return self.ln(self.fn(x, *args, **kwargs) + x)
+
+class MultiHeadAttention(nn.Module):
+    """
+    Computes multi-head attention. Supports nested or padded tensors.
+
+    Args:
+        E_q (int): Size of embedding dim for query
+        E_k (int): Size of embedding dim for key
+        E_v (int): Size of embedding dim for value
+        E_total (int): Total embedding dim of combined heads post input projection. Each head
+            has dim E_total // nheads
+        nheads (int): Number of heads
+        dropout (float, optional): Dropout probability. Default: 0.0
+        bias (bool, optional): Whether to add bias to input projection. Default: True
+    """
+
+    def __init__(
+        self,
+        E_q: int,
+        E_k: int,
+        E_v: int,
+        E_total: int,
+        nheads: int,
+        dropout: float = 0.0,
+        bias=True,
+        device=None,
+        dtype=None,
+    ) -> None:
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        self.nheads = nheads
+        self.dropout = dropout
+        self._qkv_same_embed_dim = E_q == E_k and E_q == E_v
+        if self._qkv_same_embed_dim:
+            self.packed_proj = nn.Linear(E_q, E_total * 3, bias=bias, **factory_kwargs)
+        else:
+            self.q_proj = nn.Linear(E_q, E_total, bias=bias, **factory_kwargs)
+            self.k_proj = nn.Linear(E_k, E_total, bias=bias, **factory_kwargs)
+            self.v_proj = nn.Linear(E_v, E_total, bias=bias, **factory_kwargs)
+        
+        E_out = E_q
+        
+        self.out_proj = nn.Linear(E_total, E_out, bias=bias, **factory_kwargs)
+        assert E_total % nheads == 0, "Embedding dim is not divisible by nheads"
+        self.E_head = E_total // nheads
+        self.bias = bias
+
+        self.sdpa_ctx = sdpa_kernel([SDPBackend.FLASH_ATTENTION])
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        scale = 1.0,
+        attn_mask=None,
+        is_causal=False,
+    ) -> torch.Tensor:
+        """
+        Forward pass; runs the following process:
+            1. Apply input projection
+            2. Split heads and prepare for SDPA
+            3. Run SDPA
+            4. Apply output projection
+
+        Args:
+            query (torch.Tensor): query of shape (``N``, ``L_q``, ``E_qk``)
+            key (torch.Tensor): key of shape (``N``, ``L_kv``, ``E_qk``)
+            value (torch.Tensor): value of shape (``N``, ``L_kv``, ``E_v``)
+            attn_mask (torch.Tensor, optional): attention mask of shape (``N``, ``L_q``, ``L_kv``) to pass to SDPA. Default: None
+            is_causal (bool, optional): Whether to apply causal mask. Default: False
+
+        Returns:
+            attn_output (torch.Tensor): output of shape (N, L_t, E_q)
+        """
+        # Step 1. Apply input projection
+        if self._qkv_same_embed_dim:
+            if query is key and key is value:
+                result = self.packed_proj(query)
+                query, key, value = torch.chunk(result, 3, dim=-1)
+            else:
+                q_weight, k_weight, v_weight = torch.chunk(
+                    self.packed_proj.weight, 3, dim=0
+                )
+                if self.bias:
+                    q_bias, k_bias, v_bias = torch.chunk(
+                        self.packed_proj.bias, 3, dim=0
+                    )
+                else:
+                    q_bias, k_bias, v_bias = None, None, None
+                query, key, value = (
+                    F.linear(query, q_weight, q_bias),
+                    F.linear(key, k_weight, k_bias),
+                    F.linear(value, v_weight, v_bias),
+                )
+
+        else:
+            query = self.q_proj(query)
+            key = self.k_proj(key)
+            value = self.v_proj(value)
+
+        # Step 2. Split heads and prepare for SDPA
+        # reshape query, key, value to separate by head
+        # (N, L_t, E_total) -> (N, L_t, nheads, E_head) -> (N, nheads, L_t, E_head)
+        query = rearrange(query, 'b lt (nh e_head) -> b nh lt e_head', nh=self.nheads)
+        # (N, L_s, E_total) -> (N, L_s, nheads, E_head) -> (N, nheads, L_s, E_head)
+        key = rearrange(key, 'b ls (nh e_head) -> b nh ls e_head', nh=self.nheads)
+        # (N, L_s, E_total) -> (N, L_s, nheads, E_head) -> (N, nheads, L_s, E_head)
+        value = rearrange(value, 'b ls (nh e_head) -> b nh ls e_head', nh=self.nheads)
+
+        # Step 3. Run SDPA
+        # (N, nheads, L_t, E_head)
+        with self.sdpa_ctx:
+            attn_output = F.scaled_dot_product_attention(
+                query, key, value, dropout_p=(self.dropout if self.training else 0.0), is_causal=is_causal, 
+                attn_mask=attn_mask, scale=scale
+            )
+        # (N, nheads, L_t, E_head) -> (N, L_t, nheads, E_head) -> (N, L_t, E_total)
+        attn_output = rearrange(attn_output, 'b nh lt e_head -> b lt (nh e_head)')
+
+        # Step 4. Apply output projection
+        # (N, L_t, E_total) -> (N, L_t, E_out)
+        attn_output = self.out_proj(attn_output)
+
+        return attn_output
+    
+
+class LinearAttention(nn.Module):
+    """
+    Depth-wise “linear” attention (a.k.a. O(H·W) variant used in U-Net diffusers).
+
+    Input : (B, C, H, W)
+    Output: (B, C, H, W)         – same as residual blocks expect
+    """
+
+    def __init__(self, dim: int, heads: int = 4, dim_head: int = 32):
+        super().__init__()
+        self.heads     = heads
+        self.dim_head  = dim_head
+        inner_dim      = heads * dim_head
+
+        # 1×1 conv == linear over channel dim
+        self.to_qkv = nn.Conv2d(dim, inner_dim * 3, kernel_size=1, bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Conv2d(inner_dim, dim, kernel_size=1, bias=False),
+            nn.GroupNorm(1, dim, eps=1e-6, affine=True)
+        )
+
+        # scale as constant tensor so it lands in fp32 even under autocast
+        self.register_buffer("scale", torch.tensor(dim_head ** -0.5), persistent=False)
+
+    @torch.amp.autocast('cuda', enabled=False)  # everything inside stays fp32 for stability
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = x.shape
+        n = h * w
+        heads  = self.heads
+        d_head = self.dim_head
+
+        # -- 1)  qkv projection -------------------------------------------------
+        #        (B, C, H, W) → (B, 3*H*d_head, H, W)
+        qkv = self.to_qkv(x.float()).reshape(b, 3, heads, d_head, n)
+        q, k, v = qkv.unbind(dim=1)                    # each (B, heads, d_head, N)
+
+        # -- 2)  normalise ------------------------------------------------------
+        # softmax over channel for q, over spatial for k
+        q = torch.softmax(q,  dim=2) * self.scale      # (B, H, d, N)
+        k = torch.softmax(k,  dim=3)                   # (B, H, d, N)
+
+        # -- 3)  reshape for batched GEMMs -------------------------------------
+        # merge batch & heads so we can use torch.bmm
+        q = q.reshape(b * heads, d_head, n)            # (B*H, d, N)
+        k = k.reshape(b * heads, d_head, n)
+        v = v.reshape(b * heads, d_head, n)
+
+        # context  = k @ vᵀ      – (d, N)·(N, d) → (d, d)
+        context = torch.bmm(k, v.transpose(1, 2))      # (B*H, d, d)
+
+        # out      = contextᵀ @ q – (d, d)·(d, N) → (d, N)
+        out = torch.bmm(context.transpose(1, 2), q)    # (B*H, d, N)
+
+        # -- 4)  restore (B, inner_dim, H, W) and project ----------------------
+        out = (
+            out.reshape(b, heads, d_head, h, w)
+               .transpose(1, 2)        # (B, d_head, heads, H, W)
+               .reshape(b, heads * d_head, h, w)
+        )
+
+        return self.to_out(out).type_as(x)
+
+class FastTinyAttention(nn.Module):
+    """
+    Ultra-light cross/self attention for tiny sequence & channel sizes.
+    Uses one head; no rearrange; no SDPA dispatch overhead.
+    Assumes is_causal = False (rows & columns).
+    """
+
+    def __init__(self, dim: int = 8, dropout: float = 0.0, bias=True):
+        super().__init__()
+        # q, k, v projections (all dim→dim because you said E_q == E_k == E_v == 8)
+        self.q_proj = nn.Linear(dim, dim, bias=bias)
+        self.k_proj = nn.Linear(dim, dim, bias=bias)
+        self.v_proj = nn.Linear(dim, dim, bias=bias)
+
+        self.out    = nn.Linear(dim, dim, bias=bias)
+        self.out_dim = dim
+        self.dropout = dropout
+        self.register_buffer("scale", torch.tensor(dim ** -0.5), persistent=False)
+
+    def forward(
+        self,
+        query: torch.Tensor,   # (B, L_q, 8)
+        key  : torch.Tensor,   # (B, L_k, 8)
+        value: torch.Tensor,   # (B, L_k, 8)
+        attn_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:        # (B, L_q, 8)
+
+        q = self.q_proj(query)                       # (B, L_q, 8)
+        k = self.k_proj(key)                         # (B, L_k, 8)
+        v = self.v_proj(value)
+
+        # --- Attention scores -------------------------------------------------
+        # (B, L_q, 8) @ (B, 8, L_k)  ->  (B, L_q, L_k)
+        scores = torch.baddbmm(                       # fused bias+matmul kernel
+            beta = 0.0, input = torch.zeros(q.size(0), q.size(1), k.size(1), device=q.device),
+            alpha = self.scale,
+            batch1  = q, batch2 = k.transpose(-2, -1)
+        )
+
+        if attn_mask is not None:
+            scores = scores.masked_fill_(attn_mask == 0, float('-inf'))  # −inf in fp32
+
+        attn = scores.softmax(dim=-1)
+
+        if self.dropout and self.training:
+            attn = F.dropout(attn, p=self.dropout)
+
+        # (B, L_q, L_k) @ (B, L_k, 8) → (B, L_q, 8)
+        out = torch.baddbmm(
+            beta = 0.0, input = torch.zeros(attn.size(0), attn.size(1), v.size(-1), device=attn.device),
+            batch1 = attn, batch2 = v
+        )
+
+        return self.out(out)
+
+
+class TableOCR(nn.Module):
+    def __init__(self, env, hidden_size=256, coord_emb_size=8, **kwargs):
+        super().__init__()
+        
         self.hidden_size = hidden_size
+        self.coord_emb_size = coord_emb_size
 
         self.is_continuous = False
 
-
         self.n_observations = env.single_observation_space.shape[0]
 
+        self.coordinate_proj = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(2, self.coord_emb_size), std=0.01),
+            nn.GELU()
+        )
+
+        self.word_boxes_path = "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt"
+            
+        with open(self.word_boxes_path, "r") as f:
+            self.word_boxes = [float(coord) for coord in f.readlines()[0].split(', ')]
+
+        self.word_boxes = torch.tensor(self.word_boxes, dtype=torch.float32)
+        self.word_boxes = self.word_boxes.view(-1, 2).unsqueeze_(0)
+        self.word_boxes = self.word_boxes.to(torch.device("cuda"))
+        self.register_buffer("word_boxes_buffer", self.word_boxes)
+
+        self.word_boxes_emb = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(2, self.coord_emb_size), std=0.01),
+            nn.GELU()
+        )
+
+        self.cross_attn = ResidualLN(FastTinyAttention(dim=self.coord_emb_size, dropout=0.1))
+        # self.self_attn = ResidualLN(FastTinyAttention(dim=self.coord_emb_size))
+
         self.proj = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(self.n_observations, hidden_size), std=0.01),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(self.coord_emb_size, hidden_size), std=0.01),
+            nn.GELU(),
         )
 
         self.atn_dim = env.single_action_space.nvec.tolist()
         self.actor = pufferlib.pytorch.layer_init(
-            nn.Linear(hidden_size, sum(self.atn_dim)), std=0.01
+            nn.Linear(hidden_size, sum(self.atn_dim)),
+            std=0.01
         )
 
-        self.value_fn = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size), std=0.01),
-            nn.SiLU(),
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=0.01),
+        self.value_fn = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, 1),
+            std=0.01
         )
-
-        if False:
-            pass
-        else:
-            self.word_boxes_path = "/media/dpa/data/Anshul/Ocean_current/pufferlib/resources/table_transformer/table_p1_words.txt"
-            
-            with open(self.word_boxes_path, "r") as f:
-                self.word_boxes = [float(coord) for coord in f.readlines()[0].split(', ')]
-
-            self.word_boxes = torch.tensor(self.word_boxes, dtype=torch.float32)
-
-            self.register_buffer("word_boxes_buffer", self.word_boxes)
-
-            self.word_boxes = self.word_boxes.to(torch.device("cuda"))
-
-            self.pre_comp_word_boxes = nn.Sequential(
-                pufferlib.pytorch.layer_init(nn.Linear(4, 2), std=0.01),
-                nn.SiLU()
-            )
-
-            self.pre_comp_word_boxes_proj = nn.Sequential(
-                pufferlib.pytorch.layer_init(nn.Linear(self.word_boxes.shape[0] // 2, hidden_size), std=0.01),
-                nn.LayerNorm(hidden_size),
-                nn.SiLU()
-            )
-
-            self.hidden_feature_proj = nn.Sequential(
-                pufferlib.pytorch.layer_init(nn.Linear(2 * hidden_size, hidden_size), std=0.01),
-                nn.LayerNorm(hidden_size),
-                nn.ReLU()
-            )
-            self.ln_l = nn.LayerNorm(hidden_size)
 
     def forward(self, observations, state=None):
         hidden = self.encode_observations(observations)
@@ -1098,28 +1347,29 @@ class TableTransformer(nn.Module):
         return self.forward(x, state)
 
     def encode_observations(self, observations, state=None):
-        features = self.proj(observations.float())
+        batch_size = observations.shape[0]
 
-        if hasattr(self, 'word_boxes'):
-            word_boxes = self.word_boxes.view(1, -1, 4)
-            word_boxes_f = self.pre_comp_word_boxes(word_boxes)
-            word_boxes_f = einops.rearrange(word_boxes_f, 'b h w -> b (h w)')
-            word_boxes_f = self.pre_comp_word_boxes_proj(word_boxes_f)
+        coords = observations.view(batch_size, -1, 2)
+        valid_coord = (coords[:, :, 0] != -1).unsqueeze_(-1)
 
-            word_boxes_f = word_boxes_f.expand(features.shape[0], -1)
+        coords_emb = self.coordinate_proj(coords)
+        word_boxes_emb = self.word_boxes_emb(self.word_boxes).expand(batch_size, -1, -1)
 
-            hidden_features = torch.cat([features, word_boxes_f], dim=-1)
+        x_emb = self.cross_attn(coords_emb, word_boxes_emb, word_boxes_emb)
+        # x_emb = self.self_attn(x_emb, x_emb, x_emb, attn_mask=valid_coord)
 
-            hidden_features = self.hidden_feature_proj(hidden_features)
+        x_emb *= valid_coord
 
-            features = self.ln_l(features + hidden_features)
+        x_emb = x_emb.mean(dim=1)
 
-        return features
+        hidden = self.proj(x_emb)
 
-    def decode_actions(self, flat_hidden):
-        value = self.value_fn(flat_hidden)
+        return hidden
 
-        action = self.actor(flat_hidden)
+    def decode_actions(self, hidden):
+        value = self.value_fn(hidden)
+
+        action = self.actor(hidden)
         action = torch.split(action, self.atn_dim, dim=1)
 
 

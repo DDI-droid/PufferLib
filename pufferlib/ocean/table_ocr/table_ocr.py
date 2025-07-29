@@ -15,32 +15,51 @@ import pufferlib
 from pufferlib.ocean.table_ocr import binding
 
 class TableOCR(pufferlib.PufferEnv):
-    def __init__(self, num_envs=1, render_mode='auto', log_interval=10, r_text_const_1=5, step_penalty=0.1, n_cell_boxes=46,
-                d_position=5, img_height=7015, img_width=4962, min_steps=4, max_steps=50, stable_r_coeff=0.07, done_r_coeff=10,
-                doesnt_del_before=0, max_deletes=25, epsilon_cell=0.1, buf=None, seed=0):
+    def __init__(
+        self,
+        num_envs=1,
+        render_mode='auto',
+        log_interval=10,
+        log_episodes=10,
+        n_cell_boxes=46,
+        d_position=5,
+        img_height=7015,
+        img_width=4962,
+        min_steps=4,
+        max_steps=50,
+        stable_r_coeff=0.07,
+        epsilon_cell=0.1,
+        epsilon_del=0.1,
+        buf=None,
+        seed=0
+    ):
 
         n_cell_boxes = int(n_cell_boxes)
         img_height = int(img_height)
         img_width = int(img_width)
         min_steps = int(min_steps)
         max_steps = int(max_steps)
-        doesnt_del_before = int(doesnt_del_before)
-        max_deletes = int(max_deletes)
+        log_interval = int(log_interval)
+        log_episodes = int(log_episodes)
+        num_envs = int(num_envs)
 
         self.n_cell_boxes = n_cell_boxes
 
-        self.n_observations = 4 * self.n_cell_boxes
-        self.n_boxes_action = 2 * self.n_cell_boxes
-        self.n_del_action = self.n_cell_boxes
-        self.n_halt_action = 1
+        self.n_observations = 2 * self.n_cell_boxes
 
-        self.log_interval = log_interval
+        self.n_boxes_action = 2 * self.n_cell_boxes
+        self.n_halt_action = 1
 
         self.single_observation_space = gymnasium.spaces.Box(low=-1, high=img_height,
             shape=(self.n_observations,), dtype=np.float32)
         
-        self.single_action_space = gymnasium.spaces.MultiDiscrete([3] * (self.n_boxes_action) + [2] * (self.n_del_action) + [2] * (self.n_halt_action), dtype=np.int32)
-        
+        self.single_action_space = gymnasium.spaces.MultiDiscrete([3] * (self.n_boxes_action) + [2] * (self.n_halt_action), dtype=np.int32)
+
+        self.log_interval = log_interval
+        self.log_episodes = log_episodes
+        self.logs = 0
+        self.log_idx = 0       
+
         self.render_mode = render_mode
         self.num_agents = num_envs
 
@@ -55,18 +74,14 @@ class TableOCR(pufferlib.PufferEnv):
             self.truncations,
             num_envs,
             seed,
-            step_penalty=step_penalty,
             d_position=d_position,
             img_height=img_height,
             img_width=img_width,
-            r_text_const_1=r_text_const_1,
             min_steps=min_steps,
             max_steps=max_steps,
             stable_r_coeff=stable_r_coeff,
-            done_r_coeff=done_r_coeff,
-            doesnt_del_before=doesnt_del_before,
-            max_deletes=max_deletes,
-            epsilon_cell=epsilon_cell
+            epsilon_cell=epsilon_cell,
+            epsilon_del=epsilon_del
         )
 
     def reset(self, seed=None):
@@ -80,11 +95,16 @@ class TableOCR(pufferlib.PufferEnv):
 
         self.tick += 1
         
+        self.logs += sum(self.terminals) 
+
         info = []
-        if self.tick % self.log_interval == 0:
+        if self.logs >= self.log_episodes:
             log = binding.vec_log(self.c_envs)
             if log:
+                log['log_idx'] = self.log_idx
                 info.append(log)
+                self.log_idx += 1
+                self.logs = 0
 
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
 
@@ -107,7 +127,6 @@ def test_performance(timeout=20, atn_cache=1024, num_envs=400):
     print(f'SPS: %f', num_envs*tick / (time.time() - start))
 
 if __name__ == '__main__':
-    # Run with c profile
     from cProfile import run
     num_envs = 400
     env = TableOCR(num_envs=num_envs, log_interval=10000000)

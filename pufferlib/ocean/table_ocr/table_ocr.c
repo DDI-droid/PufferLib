@@ -17,23 +17,21 @@
 int main()
 {
     TableOCR env = {
-        .img_channels = 4,
+        .d_position = 5.0f,
+
         .img_height = 1200,
         .img_width = 2200,
 
-        .step_penalty = 0.01f,
-        .d_position = 0.01f,
-
-        .iou_inside = 0.4f,
-        .iou_cell = 0.4f,
-        .iou_row = 0.4f,
-        .iou_col = 0.4f,
-
         .r_text_const_1 = 0.4f,
-        .r_cut_const_1 = 0.4f,
-        .r_cell_const_1 = 0.4f,
-        .r_row_const_1 = 0.4f,
-        .r_col_const_1 = 0.4f,
+
+        .min_steps = 10,
+        .max_steps = 1000,
+
+        .stable_r_coeff = 0.1f,
+        .done_r_coeff = 1.0f,
+
+        .epsilon_cell = 5.0f,
+        .epsilon_del = 10.0f
     };
 
     allocate(&env);
@@ -47,12 +45,12 @@ int main()
     
     while (i < 400000)
     {
-
-        // Simulate some actions
-        for (int j = 0; j < 4 * env.n_cell_boxes + env.n_cell_boxes + 1; ++j)
+        for (int j = 0; j < 2 * env.n_cell_boxes; ++j)
         {
-            env.actions[j] = rand() % 2; // Random actions for testing
+            env.actions[j] = rand() % 3;
         }
+
+        env.actions[2 * env.n_cell_boxes] = rand() % 2;
 
         c_step(&env);
         // c_render(&env);

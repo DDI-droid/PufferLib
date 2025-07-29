@@ -984,6 +984,8 @@ def eval(env_name, args=None, vecenv=None, policy=None):
             import imageio
             imageio.mimsave(args['gif_path'], frames, fps=args['fps'], loop=0)
             frames.append('Done')
+        
+        time.sleep(1)
 
 def sweep(args=None, env_name=None):
     args = args or load_config(env_name)
