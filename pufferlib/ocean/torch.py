@@ -1304,7 +1304,7 @@ class TableOCR(nn.Module):
             nn.GELU()
         )
 
-        self.word_boxes_path = "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt"
+        self.word_boxes_path = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt"
             
         with open(self.word_boxes_path, "r") as f:
             self.word_boxes = [float(coord) for coord in f.readlines()[0].split(', ')]

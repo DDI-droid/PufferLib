@@ -17,19 +17,19 @@
 #include "raylib.h"
 #include "raymath.h"
 
-const char* WORD_PATH = "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt";
-const char* CELL_BOXES_PATH = "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_rows.txt";
-const char* CLUSTERS_PATH = "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_clusters.txt";
+const char* WORD_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt";
+const char* CELL_BOXES_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_rows.txt";
+const char* CLUSTERS_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_clusters.txt";
 
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
-static inline Rectangle scale_rect(const float *b, int image_width, float scale, int off_x, int off_y)
+static inline Rectangle scale_rect(const float *b, float image_width, float scale, int off_x, int off_y)
 {
     return (Rectangle){
         off_x,
         b[0] * scale + off_y,
-        image_width * scale,
+        6500 * scale,
         (b[1] - b[0]) * scale
     };
 }
@@ -108,6 +108,7 @@ struct TableOCR
 
     int* cell_freq_map;
     int* cell_max_freq_map;
+    int* cell_max_written;
 
     int* cell_next;
     int* cell_prev;
@@ -293,6 +294,7 @@ void init(TableOCR* env)
     env->cluster_comp_write_head = calloc(env->num_clusters, sizeof(int));
     env->cell_freq_map = calloc(env->n_cell_boxes, sizeof(int));
     env->cell_max_freq_map = calloc(env->n_cell_boxes, sizeof(int));
+    env->cell_max_written = calloc(env->n_cell_boxes, sizeof(int));
 
     env->cell_next = calloc(env->n_cell_boxes, sizeof(int));
     env->cell_prev = calloc(env->n_cell_boxes, sizeof(int));
@@ -346,6 +348,7 @@ static inline float cluster_reward(TableOCR* env)
     memset(env->cluster_comp_write_head, 0, env->num_clusters * sizeof(int));
     memset(env->cell_freq_map, 0, env->n_cell_boxes * sizeof(int));
     memset(env->cell_max_freq_map, 0, env->n_cell_boxes * sizeof(int));
+    memset(env->cell_max_written, 0, env->n_cell_boxes * sizeof(int));
     memset(env->cluster_comp, -1, env->num_clusters * env->max_clstr_size * sizeof(int));
 
 
@@ -402,18 +405,55 @@ static inline float cluster_reward(TableOCR* env)
             }
             
             env->cell_freq_map[cell_idx]++;
-            
-            if (env->cell_freq_map[cell_idx] > max_freq)
+        }
+
+        int cnt = 0;
+        for (int j = 0; j < env->n_cell_boxes; ++j)
+        {
+            if (env->cell_freq_map[j] > 0)
             {
-                max_freq = env->cell_freq_map[cell_idx];
-                max_freq_idx = cell_idx;
+                cnt++;
+                max_freq_idx = j;
+                max_freq = env->cell_freq_map[j];
             }
         }
 
-        if ((max_freq_idx != -1) && (max_freq > env->cell_max_freq_map[max_freq_idx]))
+        if (cnt == 1)
         {
-            env->cell_max_freq_map[max_freq_idx] = max_freq;
+            if (env->cell_max_written[max_freq_idx] == 0)
+            {
+                env->cell_max_freq_map[max_freq_idx] = max_freq;
+                env->cell_max_written[max_freq_idx] = 1;
+            }
+            else
+            {
+                env->cell_max_freq_map[max_freq_idx] = 0;
+            }
         }
+        else if (cnt == 0)
+        {
+            continue;
+        }        
+        else
+        {
+            for (int j = 0; j < env->n_cell_boxes; ++j)
+            {
+                if (env->cell_freq_map[j] > 0)
+                {
+                    if (env->cell_max_written[j] == 0)
+                    {
+                        env->cell_max_written[j] = 1;
+                    }
+                    else
+                    {
+                        env->cell_max_freq_map[j] = 0;
+                        env->cell_max_written[j] = 1;
+                    }
+                }
+            }
+        }
+
+        
     }
 
     for (int i = 0; i < env->n_cell_boxes; ++i)
@@ -608,7 +648,6 @@ void c_render(TableOCR *env)
         SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
         int winW = GetMonitorWidth(0) / 2;
         int winH = GetMonitorHeight(0) / 2;
-        SetConfigFlags(FLAG_WINDOW_HIDDEN | FLAG_WINDOW_UNDECORATED | FLAG_WINDOW_UNFOCUSED);
 
         InitWindow(winW, winH,
                    "Table OCR (rows = blue, words = red)");
@@ -616,13 +655,13 @@ void c_render(TableOCR *env)
 
         env->client           = calloc(1, sizeof(Client));
         env->client->table    = LoadTexture(
-            "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1.png"
+            "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1.png"
         );
 
-        env->client->zoom     = 1.0f;
+        env->client->zoom     = 0.3f;
         env->client->min_zoom = 0.20f;
         env->client->max_zoom = 5.00f;
-        env->client->offset   = (Vector2){ 0, 0 };
+        env->client->offset   = (Vector2){ 100, 100 };
     }
 
     /* 1. ------------------------------------------------------------------ */
@@ -682,34 +721,33 @@ void c_render(TableOCR *env)
     if (h < GetScreenHeight()) env->client->offset.y = (GetScreenHeight() - h) / 2.0f;
 
     /* 6.  draw **only** at episode end ------------------------------------ */
-    if (!env->terminals[0]) {
-        BeginDrawing();
-        ClearBackground((Color){ 6, 24, 24, 255 });
+    BeginDrawing();
+    ClearBackground((Color){ 6, 24, 24, 255 });
 
-        DrawTextureEx(env->client->table,
-                      env->client->offset,
-                      0.0f,
-                      base * env->client->zoom,
-                      WHITE);
+    DrawTextureEx(env->client->table,
+                    env->client->offset,
+                    0.0f,
+                    base * env->client->zoom,
+                    WHITE);
 
-        for (int i = 0; i < env->n_cell_boxes; ++i) {
-            Rectangle r = scale_rect(&env->state_pos[2 * i],
-                                     env->img_width,
-                                     base * env->client->zoom,
-                                     (int)env->client->offset.x,
-                                     (int)env->client->offset.y);
+    for (int i = 0; i < env->n_cell_boxes; ++i) {
+        Rectangle r = scale_rect(&env->state_pos[2 * i],
+                                    (float)env->img_width,
+                                    base * env->client->zoom,
+                                    (int)env->client->offset.x,
+                                    (int)env->client->offset.y);
 
-            DrawRectangleLinesEx(r, 2, BLUE);
+        DrawRectangleLinesEx(r, 2, BLUE);
 
-        }
-
-        EndDrawing();
-
-        char fname[64];
-        snprintf(fname, sizeof fname, "render++_%06d.png", env->tick);
-        TakeScreenshot(fname);
     }
-    else{
+
+    EndDrawing();
+
+    char fname[64];
+    snprintf(fname, sizeof fname, "render++_%06d.png", env->tick);
+    TakeScreenshot(fname);
+
+    if (env->terminals[0]) {
         printf("Episode ended: %d steps, rps = %d/%d\n",
                env->tick, env->rps, env->max_rps);
         printf("Perf: %.3f, Score: %.3f, Return: %.3f, Length: %.3f\n",
