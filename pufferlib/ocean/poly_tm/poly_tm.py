@@ -18,7 +18,7 @@ class PolyTM(pufferlib.PufferEnv):
         work_observation_window=16,
         state_observation_window=16,
         result_observation_window=16,
-        tape_alphabet=10,
+        tape_operations=2,
         move_head=10,
         num_work_heads=3,
         num_state_heads=1,
@@ -35,9 +35,7 @@ class PolyTM(pufferlib.PufferEnv):
         buf=None,
         seed=0
         ):
-        
-        assert tape_alphabet < 255, "tape stores chars!!"
-        
+                
         # convert everything to int (okay not everything, but u get the point)
         work_tape_size = int(work_tape_size)
         state_tape_size = int(state_tape_size)

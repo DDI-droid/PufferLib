@@ -22,6 +22,8 @@ An Env for learning polynomial time oracles in Pufferlib.
                                         env->num_state_heads * (2 * env->state_observation_window + 1) + \
                                         env->num_result_heads * (2 * env->result_observation_window + 1))
 
+#define ATN_LEN(env) (3 + 3 + 1)
+
 typedef struct Log Log;
 struct Log{
     float perf; // Recommended 0-1 normalized single real number perf metric
@@ -44,7 +46,7 @@ typedef struct PolyTM PolyTM;
 struct PolyTM {
     Log log;
 
-    char* observations; 
+    int* observations; 
     int* actions;
     float* rewards;
     float* returns;
@@ -61,14 +63,11 @@ struct PolyTM {
     int state_observation_window;
     int result_observation_window;
 
-    int tape_alphabet;
-
-    int move_head;
+    int tape_operations;
 
     int num_work_heads;
     int num_state_heads;
     int num_result_heads;
-
     
     float nen_halt_penalty;
     float invalid_output_penalty;
@@ -80,15 +79,15 @@ struct PolyTM {
 
     int max_steps;
 
-    char* tape_work;
-    char* tape_state;
-    char* tape_result;
+    int* tape_work;
+    int* tape_state;
+    int* tape_result;
 
     int* work_heads;
     int* state_heads;
     int* result_heads;
 
-    char* problem;
+    int* problem;
     int problem_size;
 
     char* work_written;
@@ -97,11 +96,13 @@ struct PolyTM {
     bool ch_state;
     bool ch_result;
 
-    int ch_head_idx;
+    int ch_head_idx_0;
+    int ch_head_idx_1;
+    int ch_head_idx_2;
     int ch_tape_idx;
 
     //tmp (optimizations mostly)
-    char correct_tmp;
+    int correct_tmp;
 
     bool correct;
 };
@@ -110,12 +111,10 @@ struct PolyTM {
 float check_soln_correctness(PolyTM*);
 float auxilary_rewards(PolyTM*);
 
-static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi: v; }
-
 void init(PolyTM* env) {
-    env->tape_work = (char*)calloc(env->work_tape_size, sizeof(char));
-    env->tape_state = (char*)calloc(env->state_tape_size, sizeof(char));
-    env->tape_result = (char*)calloc(env->result_tape_size, sizeof(char));
+    env->tape_work = (int*)calloc(env->work_tape_size, sizeof(int));
+    env->tape_state = (int*)calloc(env->state_tape_size, sizeof(int));
+    env->tape_result = (int*)calloc(env->result_tape_size, sizeof(int));
 
     env->work_heads = (int*)calloc(env->num_work_heads, sizeof(int));
     env->state_heads = (int*)calloc(env->num_state_heads, sizeof(int));
@@ -128,8 +127,8 @@ void init(PolyTM* env) {
 }
 
 void allocate(PolyTM* env) {
-    env->observations = (char*)calloc(OBS_LEN(env), sizeof(char));
-    env->actions = (int*)calloc(4, sizeof(int));
+    env->observations = (int*)calloc(OBS_LEN(env), sizeof(int));
+    env->actions = (int*)calloc(ATN_LEN(env), sizeof(int));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
     init(env);
@@ -157,7 +156,7 @@ void free_allocated(PolyTM* env) {
     c_close(env);
 }
 
-static inline void tape_window_to_obs(const char* tape, int head_idx, char* dst, int w, int tape_size)
+static inline void tape_window_to_obs(const int* tape, int head_idx, int* dst, int w, int tape_size)
 {
     int left = head_idx - w;
     int right = head_idx + w;
@@ -176,14 +175,14 @@ static inline void tape_window_to_obs(const char* tape, int head_idx, char* dst,
     int span = right - left + 1;
     int padR = (2 * w + 1) - (padL + span);
 
-    memset(dst, -1, padL * sizeof(char));
-    memcpy(dst + padL, tape + left, span * sizeof(char));
-    memset(dst + padL + span, -1, padR * sizeof(char));
+    memset(dst, 0, padL * sizeof(int));
+    memcpy(dst + padL, tape + left, span * sizeof(int));
+    memset(dst + padL + span, 0, padR * sizeof(int));
 }
 
-void compute_observations(PolyTM* env) {
-
-    if (env->ch_work)
+static inline void write_head_to_obs(PolyTM* env, bool write_head, int tape_)
+{
+    if (tape_ == 0)
     {
         tape_window_to_obs(env->tape_work, env->work_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->ch_head_idx * (2 * env->work_observation_window + 1)), env->work_observation_window, env->work_tape_size);
 
@@ -200,7 +199,7 @@ void compute_observations(PolyTM* env) {
 
         env->observations[env->ch_head_idx] = env->work_heads[env->ch_head_idx];
     }
-    else if(env->ch_state)
+    else if(tape_ == 1)
     {
         tape_window_to_obs(env->tape_state, env->state_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->num_work_heads * (2 * env->work_observation_window + 1) + env->ch_head_idx * (2 * env->state_observation_window + 1)), env->state_observation_window, env->state_tape_size);
 
@@ -216,7 +215,7 @@ void compute_observations(PolyTM* env) {
 
         env->observations[env->num_work_heads + env->ch_head_idx] = env->state_heads[env->ch_head_idx];
     }
-    else if(env->ch_result)
+    else if(tape_ == 2)
     {
         tape_window_to_obs(env->tape_result, env->result_heads[env->ch_head_idx], env->observations + ((env->num_work_heads + env->num_state_heads + env->num_result_heads) + env->num_work_heads * (2 * env->work_observation_window + 1) + env->num_state_heads * (2 * env->state_observation_window + 1) + env->ch_head_idx * (2 * env->result_observation_window + 1)), env->result_observation_window, env->result_tape_size);
 
@@ -232,7 +231,11 @@ void compute_observations(PolyTM* env) {
 
         env->observations[env->num_work_heads + env->num_state_heads + env->ch_head_idx] = env->result_heads[env->ch_head_idx];
     }
-    else
+}
+
+void compute_observations(PolyTM* env) {
+
+    if (env->tick == 0)
     {
         int consumed = 0;
 
@@ -270,9 +273,13 @@ void compute_observations(PolyTM* env) {
             consumed += (2 * env->result_observation_window + 1);
         }
     }
+    else
+    {
+
+    }
 
     env->ch_work = env->ch_state = env->ch_result = false;
-    env->ch_head_idx = env->ch_tape_idx = -1;
+    env->ch_head_idx_0 = env->ch_head_idx_1 = env->ch_head_idx_2 = env->ch_tape_idx = -1;
 }
 
 void c_reset(PolyTM* env) {
