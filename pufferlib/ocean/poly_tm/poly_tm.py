@@ -8,67 +8,37 @@ from pufferlib.ocean.poly_tm import binding
 class PolyTM(pufferlib.PufferEnv):
     def __init__(
         self,
-        num_envs=1,
+        num_envs=1024,
         render_mode="auto",
-        log_interval=1,
+        log_interval=100,
         log_episodes=10,
-        work_tape_size=100,
-        state_tape_size=100,
-        result_tape_size=100,
-        work_observation_window=16,
-        state_observation_window=16,
-        result_observation_window=16,
-        tape_operations=2,
-        move_head=10,
-        num_work_heads=3,
-        num_state_heads=1,
-        num_result_heads=1,
-        nen_halt_penalty=1.0,
-        invalid_output_penalty=2.0,
-        cont_rew_mul=5.0,
-        write_rew_multiplier=10.0,
-        correctness_reward=20.0,
-        incorrectness_penalty=20.0,
-        step_rew_multiplier=0.5,
-        max_steps = 300,
+        tape_size=100,
         problem_size=4,
+        max_steps=10,
         buf=None,
         seed=0
-        ):
+    ):
                 
         # convert everything to int (okay not everything, but u get the point)
-        work_tape_size = int(work_tape_size)
-        state_tape_size = int(state_tape_size)
-        result_tape_size = int(result_tape_size)
-        work_observation_window = int(work_observation_window)
-        state_observation_window = int(state_observation_window)
-        result_observation_window = int(result_observation_window)
-        tape_alphabet = int(tape_alphabet)
-        move_head = int(move_head)
-        num_work_heads = int(num_work_heads)
-        num_state_heads = int(num_state_heads)
-        num_result_heads = int(num_result_heads)
+        tape_size = int(tape_size)
         problem_size = int(problem_size)
+        max_steps = int(max_steps)
         
-        self.num_obs = ((num_work_heads + num_state_heads + num_result_heads) + \
-                                    num_work_heads * (2 * work_observation_window + 1) + \
-                                    num_state_heads * (2 * state_observation_window + 1) + \
-                                    num_result_heads * (2 * result_observation_window + 1))
+        if tape_size <= 10:
+            raise ValueError("tape_size must be atleast 10")
+        if problem_size <= 0:
+            raise ValueError("problem_size must be positive")
+        if max_steps <= 0:
+            raise ValueError("max_steps must be positive")
         
-        self.num_heads = num_work_heads + num_state_heads + num_result_heads
-        self.num_work_heads = num_work_heads
-        self.num_state_heads = num_state_heads
-        self.num_result_heads = num_result_heads
+        self.observation_size = tape_size
         self.problem_size = problem_size
-        self.work_tape_size = work_tape_size
-        self.state_tape_size = state_tape_size
-        self.result_tape_size = result_tape_size
-        self.tape_alphabet = tape_alphabet
-        self.work_observation_window = work_observation_window
-        self.state_observation_window = state_observation_window
-        self.result_observation_window = result_observation_window
 
-        self.num_actions = 4
+        self.max_steps = max_steps
+
+        self.num_ops = 3
+
+        self.num_actions = 3 + 1
         
         self.log_idx = 0
         
@@ -79,17 +49,16 @@ class PolyTM(pufferlib.PufferEnv):
         self.log_episodes = log_episodes
         self.logs = 0
         
-        self.max_steps = max_steps
 
         self.single_observation_space = gymnasium.spaces.Box(
-            low=-1,
-            high=tape_alphabet - 1,
-            shape=(self.num_obs,),
-            dtype=np.int8
+            low=np.iinfo(np.int32).min,
+            high=np.iinfo(np.int32).max,
+            shape=(self.observation_size,),
+            dtype=np.int32
         )
         
         self.single_action_space = gymnasium.spaces.MultiDiscrete(
-            [num_work_heads + num_state_heads + num_result_heads, 2, tape_alphabet + 1, 2 * move_head + 1],
+            [tape_size]*3 + [self.num_ops],
             dtype=np.int32
         )
 
@@ -103,26 +72,9 @@ class PolyTM(pufferlib.PufferEnv):
             self.truncations,
             num_envs,
             seed,
-            work_tape_size=work_tape_size,
-            state_tape_size=state_tape_size,
-            result_tape_size=result_tape_size,
-            work_observation_window=work_observation_window,
-            state_observation_window=state_observation_window,
-            result_observation_window=result_observation_window,
-            tape_alphabet=tape_alphabet,
-            move_head=move_head,
-            num_work_heads=num_work_heads,
-            num_state_heads=num_state_heads,
-            num_result_heads=num_result_heads,
-            nen_halt_penalty=nen_halt_penalty,
-            invalid_output_penalty=invalid_output_penalty,
-            cont_rew_mul=cont_rew_mul,
-            write_rew_multiplier=write_rew_multiplier,
-            correctness_reward=correctness_reward,
-            incorrectness_penalty=incorrectness_penalty,
-            step_rew_multiplier=step_rew_multiplier,
-            max_steps=max_steps,
-            problem_size=problem_size
+            tape_size=tape_size,
+            problem_size=problem_size,
+            max_steps=max_steps
         )
         
     def reset(self, seed=None):
