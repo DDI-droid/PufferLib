@@ -21,9 +21,6 @@ An Env for learning polynomial time oracles in Pufferlib.
 
 #define ATN_LEN(env) (3 + 1)
 
-// Function prototypes
-void c_close(PolyTM* env);
-
 typedef struct Log Log;
 struct Log{
     float perf;
@@ -73,6 +70,9 @@ typedef enum {
     OP_ADD,
     OP_MULT
 } OP;
+
+// Function prototypes
+void c_close(PolyTM* env);
 
 void init(PolyTM* env) {
     env->tape = (int*)calloc(env->tape_size, sizeof(int));
