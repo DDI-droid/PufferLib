@@ -17,8 +17,8 @@
 #include "raylib.h"
 #include "raymath.h"
 
-const char* WORD_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt";
-const char* CELL_BOXES_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_rows.txt";
+const char* WORD_BOXES_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt";
+const char* ROW_BOXES_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_rows.txt";
 const char* CLUSTERS_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_clusters.txt";
 
 #define max(a, b) ((a) > (b) ? (a) : (b))
@@ -41,10 +41,12 @@ struct Log
     float score;
     float episode_return;
     float episode_length;
-    float n_deleted;
-    float n_clustered;
-    float init_clustered;
-    float n; // Required as the last field
+
+    float n_deleted_rows;
+    float n_good_rows;
+    float init_good_rows;
+    float init_perf;
+    float n;
 };
 
 typedef struct { float y1, y2; } Span;
@@ -79,42 +81,38 @@ struct TableOCR
     int min_steps;
     int max_steps;
 
-    float epsilon_cell;
     float epsilon_del;
 
-    float* cell_boxes;
+    float* row_boxes;
     float* word_boxes;
     int* cluster_idx;
-    int n_cell_boxes;
+    int n_row_boxes;
     int n_word_boxes;
-    int n_clusters;
+    int n_cluster_idx;
 
     int num_clusters;
-    int max_clstr_size;
+    int max_cluster_size;
 
     int tick;
 
-    int max_rps;
-    int rps;
-    int n_clustered;
-    int init_clustered;
+    int perf_num;
+    int pef_den;
+    int n_good_rows;
+    int init_good_rows;
+    float init_perf;
 
     Span* spans;
 
-    float* state_pos;
+    float* row_state;
 
-    int* cluster_comp;
-    int* cluster_comp_write_head;
+    int* row_reward_map;
+    int* cluster_freq;
 
-    int* cell_freq_map;
-    int* cell_max_freq_map;
-    int* cell_max_written;
+    int* row_next;
+    int* row_prev;
+    int row_start;
 
-    int* cell_next;
-    int* cell_prev;
-    int cell_start;
-
-    int* cell_deleted;
+    int* row_deleted;
 
     int num_deleted;
 
@@ -134,12 +132,12 @@ static int cmp_span_by_top(const void* a, const void* b)
 
 static void precomp(TableOCR* env)
 {
-    const int n_cells = env->n_cell_boxes;
+    const int n_rows = env->n_row_boxes;
     int n_spans = 0;
 
-    for (int i = 0; i < n_cells; ++i) {
-        float y1 = env->state_pos[2 * i];
-        float y2 = env->state_pos[2 * i + 1];
+    for (int i = 0; i < n_rows; ++i) {
+        float y1 = env->row_state[2 * i];
+        float y2 = env->row_state[2 * i + 1];
         if (y2 < y1) { float tmp = y1; y1 = y2; y2 = tmp; }
         env->spans[n_spans++] = (Span){ y1, y2 };
     }
@@ -212,10 +210,10 @@ int* parse_ints_strtol(const char* buf, int* out_count)
 
     while (*p)
     {
-        errno = 0;                       /* clear for each attempt */
-        long v = strtol(p, &end, 10);    /* base-10 by default */
+        errno = 0;
+        long v = strtol(p, &end, 10);
 
-        if (end == p)                  /* no digits consumed ⇒ skip char */
+        if (end == p)
         {
             ++p;
         }
@@ -266,21 +264,20 @@ void init(TableOCR* env)
         env->num_clusters = max(env->num_clusters, env->cluster_idx[i] + 1);
     }
 
-    int* tmp_arr = calloc(env->num_clusters, sizeof(int));
+    env->clstr_freq = calloc(env->num_clusters, sizeof(int));
     for (int i = 0; i < env->n_word_boxes; ++i) {
-        tmp_arr[env->cluster_idx[i]]++;
+        env->clstr_freq[env->cluster_idx[i]]++;
     }
 
     for (int i = 0; i < env->num_clusters; ++i) {
-        env->max_clstr_size = max(env->max_clstr_size, tmp_arr[i]);
+        env->max_clstr_size = max(env->max_clstr_size, env->clstr_freq[i]);
     }
     
-    free(tmp_arr);
-
     env->max_rps = 0;
     env->rps = 0;
-    env->n_clustered = 0;
+    env->n_good_rows = 0;
     env->init_clustered = 0;
+    env->init_perf = 0.0f;
     env->num_deleted = 0;
 
     env->state_pos = (float*)calloc(env->n_cell_boxes * 2, sizeof(float));
@@ -289,12 +286,7 @@ void init(TableOCR* env)
 
     env->spans = calloc(env->n_cell_boxes, sizeof(Span));
 
-    env->cluster_comp = calloc(env->num_clusters * env->max_clstr_size, sizeof(int));
-    
-    env->cluster_comp_write_head = calloc(env->num_clusters, sizeof(int));
-    env->cell_freq_map = calloc(env->n_cell_boxes, sizeof(int));
-    env->cell_max_freq_map = calloc(env->n_cell_boxes, sizeof(int));
-    env->cell_max_written = calloc(env->n_cell_boxes, sizeof(int));
+    env->cell_reward_map = calloc(env->n_cell_boxes, sizeof(int));
 
     env->cell_next = calloc(env->n_cell_boxes, sizeof(int));
     env->cell_prev = calloc(env->n_cell_boxes, sizeof(int));
@@ -319,10 +311,8 @@ void free_initialized(TableOCR* env)
     free(env->cell_boxes);
     free(env->word_boxes);
     free(env->cluster_idx);
-    free(env->cluster_comp);
-    free(env->cluster_comp_write_head);
-    free(env->cell_freq_map);
-    free(env->cell_max_freq_map);
+    free(env->clstr_freq);
+    free(env->cell_reward_map);
     free(env->cell_next);
     free(env->cell_prev);
     free(env->spans);
@@ -342,139 +332,83 @@ void free_allocated(TableOCR* env)
 
 static inline float cluster_reward(TableOCR* env)
 {
-    const int nW = env->n_word_boxes;
-    int ir = 0;
+    int cell_ptr = env->cell_start;
 
-    memset(env->cluster_comp_write_head, 0, env->num_clusters * sizeof(int));
-    memset(env->cell_freq_map, 0, env->n_cell_boxes * sizeof(int));
-    memset(env->cell_max_freq_map, 0, env->n_cell_boxes * sizeof(int));
-    memset(env->cell_max_written, 0, env->n_cell_boxes * sizeof(int));
-    memset(env->cluster_comp, -1, env->num_clusters * env->max_clstr_size * sizeof(int));
+    memset(env->cell_reward_map, -1, env->n_cell_boxes * sizeof(int));
 
+    int freq = 0;
 
-    for (int i = 0; i < nW; ++i)
+    while (cell_ptr != -1)
     {
-        float y1 = env->word_boxes[2 * i];
-        float y2 = env->word_boxes[2 * i + 1];
+        int cell_y1 = env->state_pos[2 * cell_ptr];
+        int cell_y2 = env->state_pos[2 * cell_ptr + 1];
 
-        int cluster_id = env->cluster_idx[i];
+        freq = 0;
 
-        ir = env->cell_start;
-
-        if (ir == -1)
+        for (int i = 0; i < env->n_word_boxes; ++i)
         {
-            printf("cell start is -1!!\n");
-        }
+            int word_y1 = env->word_boxes[2 * i];
+            int word_y2 = env->word_boxes[2 * i + 1];
 
-        while ((ir != -1) && (env->state_pos[2 * ir + 1] <= y1)) // leq makes sense here
-        {
-            ir = env->cell_next[ir];
-        }
-
-        while ((ir != -1) && (env->state_pos[2 * ir] < y2)) // less than makes sense here
-        {
-            if ((env->state_pos[2 * ir] <= y1 + env->epsilon_cell) && (env->state_pos[2 * ir + 1] >= y2 - env->epsilon_cell) && (env->cell_deleted[ir] == 0))
-            {
-                env->cluster_comp[env->max_clstr_size * cluster_id + env->cluster_comp_write_head[cluster_id]] = ir;
-                env->cluster_comp_write_head[cluster_id]++;
-                break;
-            }
-            ir = env->cell_next[ir];
-        }
-    }
-
-    int cluster_rew = 0;
-
-    int max_freq = 0;
-    int max_freq_idx = -1;
-
-    for (int i = 0; i < env->num_clusters; i++)
-    {
-        memset(env->cell_freq_map, 0, env->n_cell_boxes * sizeof(int));
-        max_freq = 0;
-        max_freq_idx = -1;
-
-        for (int j = 0; j < env->cluster_comp_write_head[i]; j++)
-        {
-            int cell_idx = env->cluster_comp[i * env->max_clstr_size + j];
-            
-            if (cell_idx < 0 || cell_idx >= env->n_cell_boxes || env->cell_deleted[cell_idx] == 1)
-            {
-                fprintf(stderr, "Invalid cell index %d for cluster %d\n", cell_idx, i);
+            if ((cell_y2 <= word_y1) || (word_y2 <= cell_y1))
                 continue;
-            }
-            
-            env->cell_freq_map[cell_idx]++;
-        }
 
-        int cnt = 0;
-        for (int j = 0; j < env->n_cell_boxes; ++j)
-        {
-            if (env->cell_freq_map[j] > 0)
+            if ((cell_y1 <= word_y1) && (word_y2 <= cell_y2))
             {
-                cnt++;
-                max_freq_idx = j;
-                max_freq = env->cell_freq_map[j];
-            }
-        }
-
-        if (cnt == 1)
-        {
-            if (env->cell_max_written[max_freq_idx] == 0)
-            {
-                env->cell_max_freq_map[max_freq_idx] = max_freq;
-                env->cell_max_written[max_freq_idx] = 1;
+                if (env->cell_reward_map[cell_ptr] == -1)
+                {
+                    env->cell_reward_map[cell_ptr] = env->cluster_idx[i];
+                    freq++;
+                }
+                else if (env->cell_reward_map[cell_ptr] == env->cluster_idx[i])
+                {
+                    freq++;
+                }
+                else
+                {
+                    env->cell_reward_map[cell_ptr] = -1;
+                    break;
+                }
             }
             else
             {
-                env->cell_max_freq_map[max_freq_idx] = 0;
-            }
-        }
-        else if (cnt == 0)
-        {
-            continue;
-        }        
-        else
-        {
-            for (int j = 0; j < env->n_cell_boxes; ++j)
-            {
-                if (env->cell_freq_map[j] > 0)
-                {
-                    if (env->cell_max_written[j] == 0)
-                    {
-                        env->cell_max_written[j] = 1;
-                    }
-                    else
-                    {
-                        env->cell_max_freq_map[j] = 0;
-                        env->cell_max_written[j] = 1;
-                    }
-                }
+                env->cell_reward_map[cell_ptr] = -1;
+                break;
             }
         }
 
-        
+        if (env->cell_reward_map[cell_ptr] != -1)
+        {
+            if (freq < env->clstr_freq[env->cell_reward_map[cell_ptr]])
+            {
+                env->cell_reward_map[cell_ptr] = -1;
+            }
+
+        }
+
+        cell_ptr = env->cell_next[cell_ptr];
     }
 
     for (int i = 0; i < env->n_cell_boxes; ++i)
     {
-        cluster_rew += env->cell_max_freq_map[i];
+        if (env->cell_reward_map[i] != -1)
+        {
+            env->n_good_rows++;
+        }
     }
 
-    env->rps = cluster_rew;
+    env->rps = env->n_good_rows;
+    env->max_rps = env->n_cell_boxes;
 
-    env->n_clustered = cluster_rew;
+    return (float)env->n_good_rows / env->n_cell_boxes;
 
-    env->max_rps = nW;
-
-    return (float)cluster_rew / nW;
 }
 
 static inline float compute_reward(TableOCR* env)
 {
     env->rps = 0;
     env->max_rps = 0;
-    env->n_clustered = 0;
+    env->n_good_rows = 0;
 
     float r_comp = cluster_reward(env);
     return r_comp;
@@ -491,7 +425,7 @@ void c_reset(TableOCR* env)
 
     env->rps = 0;
     env->max_rps = 0;
-    env->n_clustered = 0;
+    env->n_good_rows = 0;
     env->num_deleted = 0;
 
     env->cell_start = 0;
@@ -526,9 +460,9 @@ void c_reset(TableOCR* env)
     precomp(env);
 
     compute_reward(env);
-    env->init_clustered = env->n_clustered;
+    env->init_clustered = env->n_good_rows;
 
-    compute_observations(env);
+    compute_observations(env);// required
 }
 
 void c_step(TableOCR* env)
@@ -629,7 +563,7 @@ void c_step(TableOCR* env)
         env->log.episode_return += env->returns[0];
         env->log.episode_length += (float)env->tick;
         env->log.n_deleted += (float)env->num_deleted;
-        env->log.n_clustered += (float)env->n_clustered;
+        env->log.n_good_rows += (float)env->n_good_rows;
         env->log.init_clustered += (float)env->init_clustered;
         env->log.n++;
 
