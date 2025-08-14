@@ -243,24 +243,24 @@ int* parse_ints_strtol(const char* buf, int* out_count)
 
 void init(TableOCR* env)
 {
-    char* word_buf = slurp_file(WORD_PATH);
+    char* word_buf = slurp_file(WORD_BOXES_PATH);
     env->word_boxes = parse_floats_strtof(word_buf, &env->n_word_boxes);
     free(word_buf);
     env->n_word_boxes /= 2;
 
-    char* cell_buf = slurp_file(CELL_BOXES_PATH);
-    env->cell_boxes = parse_floats_strtof(cell_buf, &env->n_cell_boxes);
-    free(cell_buf);
-    env->n_cell_boxes /= 2;
+    char* row_buf = slurp_file(ROW_BOXES_PATH);
+    env->row_boxes = parse_floats_strtof(row_buf, &env->n_row_boxes);
+    free(row_buf);
+    env->n_row_boxes /= 2;
 
     char* clusters_buf = slurp_file(CLUSTERS_PATH);
-    env->cluster_idx = parse_ints_strtol(clusters_buf, &env->n_clusters);
+    env->cluster_idx = parse_ints_strtol(clusters_buf, &env->n_clusters_idx);
     free(clusters_buf);
 
     env->num_clusters = 0;
     env->max_clstr_size = 0;
 
-    for (int i = 0; i < env->n_clusters; ++i) {
+    for (int i = 0; i < env->n_clusters_idx; ++i) {
         env->num_clusters = max(env->num_clusters, env->cluster_idx[i] + 1);
     }
 
@@ -273,51 +273,50 @@ void init(TableOCR* env)
         env->max_clstr_size = max(env->max_clstr_size, env->clstr_freq[i]);
     }
     
-    env->max_rps = 0;
-    env->rps = 0;
+    env->perf_num = 0;
+    env->perf_den = 0;
     env->n_good_rows = 0;
-    env->init_clustered = 0;
+    env->init_good_rows = 0;
     env->init_perf = 0.0f;
     env->num_deleted = 0;
 
-    env->state_pos = (float*)calloc(env->n_cell_boxes * 2, sizeof(float));
+    env->row_state = (float*)calloc(env->n_row_boxes * 2, sizeof(float));
 
     env->returns = (float*)calloc(1, sizeof(float));
 
-    env->spans = calloc(env->n_cell_boxes, sizeof(Span));
+    env->spans = calloc(env->n_row_boxes, sizeof(Span));
 
-    env->cell_reward_map = calloc(env->n_cell_boxes, sizeof(int));
+    env->row_reward_map = calloc(env->n_row_boxes, sizeof(int));
 
-    env->cell_next = calloc(env->n_cell_boxes, sizeof(int));
-    env->cell_prev = calloc(env->n_cell_boxes, sizeof(int));
+    env->row_next = calloc(env->n_row_boxes, sizeof(int));
+    env->row_prev = calloc(env->n_row_boxes, sizeof(int));
 
-    env->cell_deleted = calloc(env->n_cell_boxes, sizeof(int));
+    env->row_deleted = calloc(env->n_row_boxes, sizeof(int));
 }
 
 // for c/c++ testing
 void allocate(TableOCR* env)
 {
     init(env);
-
-    env->observations = (float*)calloc(2 * env->n_cell_boxes, sizeof(float));
-    env->actions = (int*)calloc(2 * env->n_cell_boxes + 1, sizeof(int));
+    env->observations = (float*)calloc(env->n_row_boxes * 2, sizeof(float));
+    env->actions = (int*)calloc(env->n_row_boxes * 2 + 1, sizeof(int));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char *)calloc(1, sizeof(unsigned char));
 }
 
 void free_initialized(TableOCR* env)
 {
-    free(env->state_pos);
-    free(env->cell_boxes);
+    free(env->row_state);
+    free(env->row_boxes);
     free(env->word_boxes);
     free(env->cluster_idx);
     free(env->clstr_freq);
-    free(env->cell_reward_map);
-    free(env->cell_next);
-    free(env->cell_prev);
+    free(env->row_reward_map);
+    free(env->row_next);
+    free(env->row_prev);
     free(env->spans);
     free(env->returns);
-    free(env->cell_deleted);
+    free(env->row_deleted);
 }
 
 void free_allocated(TableOCR* env)
@@ -326,22 +325,21 @@ void free_allocated(TableOCR* env)
     free(env->actions);
     free(env->rewards);
     free(env->terminals);
-
     c_close(env);
 }
 
 static inline float cluster_reward(TableOCR* env)
 {
-    int cell_ptr = env->cell_start;
+    int row_ptr = env->row_start;
 
-    memset(env->cell_reward_map, -1, env->n_cell_boxes * sizeof(int));
+    memset(env->row_reward_map, -1, env->n_row_boxes * sizeof(int));
 
     int freq = 0;
 
-    while (cell_ptr != -1)
+    while (row_ptr != -1)
     {
-        int cell_y1 = env->state_pos[2 * cell_ptr];
-        int cell_y2 = env->state_pos[2 * cell_ptr + 1];
+        int row_y1 = env->row_state[2 * row_ptr];
+        int row_y2 = env->row_state[2 * row_ptr + 1];
 
         freq = 0;
 
@@ -350,57 +348,57 @@ static inline float cluster_reward(TableOCR* env)
             int word_y1 = env->word_boxes[2 * i];
             int word_y2 = env->word_boxes[2 * i + 1];
 
-            if ((cell_y2 <= word_y1) || (word_y2 <= cell_y1))
+            if ((row_y2 <= word_y1) || (word_y2 <= row_y1))
                 continue;
 
-            if ((cell_y1 <= word_y1) && (word_y2 <= cell_y2))
+            if ((row_y1 <= word_y1) && (word_y2 <= row_y2))
             {
-                if (env->cell_reward_map[cell_ptr] == -1)
+                if (env->row_reward_map[row_ptr] == -1)
                 {
-                    env->cell_reward_map[cell_ptr] = env->cluster_idx[i];
+                    env->row_reward_map[row_ptr] = env->cluster_idx[i];
                     freq++;
                 }
-                else if (env->cell_reward_map[cell_ptr] == env->cluster_idx[i])
+                else if (env->row_reward_map[row_ptr] == env->cluster_idx[i])
                 {
                     freq++;
                 }
                 else
                 {
-                    env->cell_reward_map[cell_ptr] = -1;
+                    env->row_reward_map[row_ptr] = -1;
                     break;
                 }
             }
             else
             {
-                env->cell_reward_map[cell_ptr] = -1;
+                env->row_reward_map[row_ptr] = -1;
                 break;
             }
         }
 
-        if (env->cell_reward_map[cell_ptr] != -1)
+        if (env->row_reward_map[row_ptr] != -1)
         {
-            if (freq < env->clstr_freq[env->cell_reward_map[cell_ptr]])
+            if (freq < env->clstr_freq[env->row_reward_map[row_ptr]])
             {
-                env->cell_reward_map[cell_ptr] = -1;
+                env->row_reward_map[row_ptr] = -1;
             }
 
         }
 
-        cell_ptr = env->cell_next[cell_ptr];
+        row_ptr = env->row_next[row_ptr];
     }
 
-    for (int i = 0; i < env->n_cell_boxes; ++i)
+    for (int i = 0; i < env->n_row_boxes; ++i)
     {
-        if (env->cell_reward_map[i] != -1)
+        if (env->row_reward_map[i] != -1)
         {
             env->n_good_rows++;
         }
     }
 
-    env->rps = env->n_good_rows;
-    env->max_rps = env->n_cell_boxes;
+    env->perf_num = env->n_good_rows;
+    env->perf_den = env->n_row_boxes;
 
-    return (float)env->n_good_rows / env->n_cell_boxes;
+    return (float)env->n_good_rows / env->n_row_boxes;
 
 }
 
