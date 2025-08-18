@@ -17,9 +17,9 @@
 #include "raylib.h"
 #include "raymath.h"
 
-const char* WORD_BOXES_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt";
-const char* ROW_BOXES_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_rows.txt";
-const char* CLUSTERS_PATH = "/media/dpa/data/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_clusters.txt";
+const char* WORD_BOXES_PATH = "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_words.txt";
+const char* ROW_BOXES_PATH = "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_rows.txt";
+const char* CLUSTERS_PATH = "/media/user/EXT_DRIVE/Anshul/Ocean_ocr/helper/prepped/JPMCC 2016-JP2_Camelback Crossing_20231231_p1_clusters.txt";
 
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -46,6 +46,10 @@ struct Log
     float n_good_rows;
     float init_good_rows;
     float init_perf;
+    float n_good_words;
+    float word_perf;
+    float init_good_words;
+    float init_word_perf;
     float n;
 };
 
@@ -95,11 +99,16 @@ struct TableOCR
 
     int tick;
 
-    int perf_num;
-    int pef_den;
+    float perf_num;
+    float perf_den;
     int n_good_rows;
     int init_good_rows;
     float init_perf;
+    int n_good_words;
+    float word_perf_num;
+    float word_perf_den;
+    int init_good_words;
+    float init_word_perf;
 
     Span* spans;
 
@@ -146,13 +155,13 @@ static void precomp(TableOCR* env)
 
 
     for (int i = 0; i < n_spans; ++i) {
-        env->state_pos[2 * i] = env->spans[i].y1;
-        env->state_pos[2 * i + 1] = env->spans[i].y2;
+        env->row_state[2 * i] = env->spans[i].y1;
+        env->row_state[2 * i + 1] = env->spans[i].y2;
     }
 
     for (int i = 1; i < 2 * n_spans; ++i)
     {
-        env->state_pos[i] = max(env->state_pos[i], env->state_pos[i-1]);
+        env->row_state[i] = max(env->row_state[i], env->row_state[i-1]);
     }
 }
 
@@ -254,32 +263,29 @@ void init(TableOCR* env)
     env->n_row_boxes /= 2;
 
     char* clusters_buf = slurp_file(CLUSTERS_PATH);
-    env->cluster_idx = parse_ints_strtol(clusters_buf, &env->n_clusters_idx);
+    env->cluster_idx = parse_ints_strtol(clusters_buf, &env->n_cluster_idx);
     free(clusters_buf);
 
-    env->num_clusters = 0;
-    env->max_clstr_size = 0;
+    if (env->n_cluster_idx != env->n_word_boxes)
+        fprintf(stderr, "clusters (%d) != word_boxes (%d)\n", env->n_cluster_idx, env->n_word_boxes);
 
-    for (int i = 0; i < env->n_clusters_idx; ++i) {
+
+    env->num_clusters = 0;
+    env->max_cluster_size = 0;
+
+    for (int i = 0; i < env->n_cluster_idx; ++i) {
         env->num_clusters = max(env->num_clusters, env->cluster_idx[i] + 1);
     }
 
-    env->clstr_freq = calloc(env->num_clusters, sizeof(int));
+    env->cluster_freq = calloc(env->num_clusters, sizeof(int));
     for (int i = 0; i < env->n_word_boxes; ++i) {
-        env->clstr_freq[env->cluster_idx[i]]++;
+        env->cluster_freq[env->cluster_idx[i]]++;
     }
 
     for (int i = 0; i < env->num_clusters; ++i) {
-        env->max_clstr_size = max(env->max_clstr_size, env->clstr_freq[i]);
+        env->max_cluster_size = max(env->max_cluster_size, env->cluster_freq[i]);
     }
     
-    env->perf_num = 0;
-    env->perf_den = 0;
-    env->n_good_rows = 0;
-    env->init_good_rows = 0;
-    env->init_perf = 0.0f;
-    env->num_deleted = 0;
-
     env->row_state = (float*)calloc(env->n_row_boxes * 2, sizeof(float));
 
     env->returns = (float*)calloc(1, sizeof(float));
@@ -310,7 +316,7 @@ void free_initialized(TableOCR* env)
     free(env->row_boxes);
     free(env->word_boxes);
     free(env->cluster_idx);
-    free(env->clstr_freq);
+    free(env->cluster_freq);
     free(env->row_reward_map);
     free(env->row_next);
     free(env->row_prev);
@@ -336,17 +342,20 @@ static inline float cluster_reward(TableOCR* env)
 
     int freq = 0;
 
+    env->n_good_rows = 0;
+    env->n_good_words = 0;
+
     while (row_ptr != -1)
     {
-        int row_y1 = env->row_state[2 * row_ptr];
-        int row_y2 = env->row_state[2 * row_ptr + 1];
+        float row_y1 = env->row_state[2 * row_ptr];
+        float row_y2 = env->row_state[2 * row_ptr + 1];
 
         freq = 0;
 
         for (int i = 0; i < env->n_word_boxes; ++i)
         {
-            int word_y1 = env->word_boxes[2 * i];
-            int word_y2 = env->word_boxes[2 * i + 1];
+            float word_y1 = env->word_boxes[2 * i];
+            float word_y2 = env->word_boxes[2 * i + 1];
 
             if ((row_y2 <= word_y1) || (word_y2 <= row_y1))
                 continue;
@@ -377,7 +386,7 @@ static inline float cluster_reward(TableOCR* env)
 
         if (env->row_reward_map[row_ptr] != -1)
         {
-            if (freq < env->clstr_freq[env->row_reward_map[row_ptr]])
+            if (freq < env->cluster_freq[env->row_reward_map[row_ptr]])
             {
                 env->row_reward_map[row_ptr] = -1;
             }
@@ -392,75 +401,75 @@ static inline float cluster_reward(TableOCR* env)
         if (env->row_reward_map[i] != -1)
         {
             env->n_good_rows++;
+            env->n_good_words += env->cluster_freq[env->row_reward_map[i]];
         }
     }
 
     env->perf_num = env->n_good_rows;
     env->perf_den = env->n_row_boxes;
 
-    return (float)env->n_good_rows / env->n_row_boxes;
+    env->word_perf_num = env->n_good_words;
+    env->word_perf_den = env->n_word_boxes;
+
+    return env->n_good_rows / (float)env->n_row_boxes;
 
 }
 
 static inline float compute_reward(TableOCR* env)
 {
-    env->rps = 0;
-    env->max_rps = 0;
-    env->n_good_rows = 0;
-
     float r_comp = cluster_reward(env);
     return r_comp;
 }
 
 void compute_observations(TableOCR* env)
 {
-    memcpy(env->observations, env->state_pos, env->n_cell_boxes * 2 * sizeof(float));
+    memcpy(env->observations, env->row_state, env->n_row_boxes * 2 * sizeof(float));
 }
 
 void c_reset(TableOCR* env)
 {
     env->tick = 0;
+    
+    env->row_start = 0;
 
-    env->rps = 0;
-    env->max_rps = 0;
-    env->n_good_rows = 0;
-    env->num_deleted = 0;
+    memcpy(env->row_state, env->row_boxes, env->n_row_boxes * 2 * sizeof(float));
 
-    env->cell_start = 0;
-
-
-    memcpy(env->state_pos, env->cell_boxes, env->n_cell_boxes * 2 * sizeof(float));
-
-    for (int i = 0; i < env->n_cell_boxes; ++i)
+    for (int i = 0; i < env->n_row_boxes; ++i)
     {
         if (i > 0)
         {
-            env->cell_prev[i] = i - 1;
+            env->row_prev[i] = i - 1;
         }
         else{
-            env->cell_prev[i] = -1;
+            env->row_prev[i] = -1;
         }
 
-        if (i < env->n_cell_boxes - 1)
+        if (i < env->n_row_boxes - 1)
         {
-            env->cell_next[i] = i + 1;
+            env->row_next[i] = i + 1;
         }
         else
         {
-            env->cell_next[i] = -1;
+            env->row_next[i] = -1;
         }
     }
 
-    memset(env->cell_deleted, 0, env->n_cell_boxes * sizeof(int));    
-
+    memset(env->row_deleted, 0, env->n_row_boxes * sizeof(int));
+    env->num_deleted = 0;
+    
     env->returns[0] = 0.0f;
 
     precomp(env);
 
     compute_reward(env);
-    env->init_clustered = env->n_good_rows;
 
-    compute_observations(env);// required
+    env->init_good_rows = env->n_good_rows;
+    env->init_perf = env->perf_num / (float)env->perf_den;
+
+    env->init_good_words = env->n_good_words;
+    env->init_word_perf = env->word_perf_num / (float)env->word_perf_den;
+
+    compute_observations(env);
 }
 
 void c_step(TableOCR* env)
@@ -469,9 +478,9 @@ void c_step(TableOCR* env)
 
     env->rewards[0] = 0.0f;
 
-    for (int i = 0; i < 2 * env->n_cell_boxes; ++i)
+    for (int i = 0; i < 2 * env->n_row_boxes; ++i)
     {
-        if (env->cell_deleted[i / 2])
+        if (env->row_deleted[i / 2])
             continue;
 
         if (env->actions[i] == 0)
@@ -481,61 +490,60 @@ void c_step(TableOCR* env)
         {
             if (i % 2 == 0)
             {
-                if (env->cell_prev[i / 2] == -1)
+                if (env->row_prev[i / 2] == -1)
                 {
-                    env->state_pos[i] = max(env->state_pos[i] - env->d_position, 0.0f);
+                    env->row_state[i] = max(env->row_state[i] - env->d_position, 0.0f);
                 }
                 else
                 {
-                    env->state_pos[i] = max(env->state_pos[i] - env->d_position, env->state_pos[2 * env->cell_prev[i / 2] + 1]);
+                    env->row_state[i] = max(env->row_state[i] - env->d_position, env->row_state[2 * env->row_prev[i / 2] + 1]);
                 }
             }
             else
             {
-                env->state_pos[i] = max(env->state_pos[i] - env->d_position, env->state_pos[i-1]);
+                env->row_state[i] = max(env->row_state[i] - env->d_position, env->row_state[i-1]);
             }
         }
         else if (env->actions[i] == 2)
         {
             if (i % 2 == 0)
             {
-                env->state_pos[i] = min(env->state_pos[i] + env->d_position, env->state_pos[i+1]);
+                env->row_state[i] = min(env->row_state[i] + env->d_position, env->row_state[i+1]);
             }
             else
             {
-                if (env->cell_next[i / 2] == -1)
+                if (env->row_next[i / 2] == -1)
                 {
-                    env->state_pos[i] = min(env->state_pos[i] + env->d_position, (float)env->img_height);
+                    env->row_state[i] = min(env->row_state[i] + env->d_position, (float)env->img_height);
                 }
                 else
                 {
-                    env->state_pos[i] = min(env->state_pos[i] + env->d_position, env->state_pos[2 * env->cell_next[i / 2]]);
+                    env->row_state[i] = min(env->row_state[i] + env->d_position, env->row_state[2 * env->row_next[i / 2]]);
                 }
             }
         }
         else
-            printf("Invalid action %d for cell %d\n", env->actions[i], i);
+            printf("Invalid action %d for row %d\n", env->actions[i], i);
     }
 
-    for (int i = 0; i < env->n_cell_boxes; ++i)
+    for (int i = 0; i < env->n_row_boxes; ++i)
     {
-        if ((env->cell_deleted[i] == 0) && (env->state_pos[2 * i + 1] - env->state_pos[2 * i] < env->epsilon_del))
+        if ((env->row_deleted[i] == 0) && (env->row_state[2 * i + 1] - env->row_state[2 * i] < env->epsilon_del))
         {
-            //row deletion
-            env->cell_deleted[i] = 1;
+            env->row_deleted[i] = 1;
             env->num_deleted++;
 
-            env->state_pos[2 * i] = -1.0f;
-            env->state_pos[2 * i + 1] = -1.0f;
+            env->row_state[2 * i] = -1.0f;
+            env->row_state[2 * i + 1] = -1.0f;
 
-            if (env->cell_next[i] != -1)
-                env->cell_prev[env->cell_next[i]] = env->cell_prev[i];
+            if (env->row_next[i] != -1)
+                env->row_prev[env->row_next[i]] = env->row_prev[i];
 
-            if (env->cell_prev[i] != -1)
-                env->cell_next[env->cell_prev[i]] = env->cell_next[i];
+            if (env->row_prev[i] != -1)
+                env->row_next[env->row_prev[i]] = env->row_next[i];
 
-            if (env->cell_start == i)
-                env->cell_start = env->cell_next[i];
+            if (env->row_start == i)
+                env->row_start = env->row_next[i];
         }
     }
     
@@ -547,7 +555,7 @@ void c_step(TableOCR* env)
     else if (env->tick > env->max_steps)
         env->terminals[0] = 1;
     else
-        env->terminals[0] = env->actions[2 * env->n_cell_boxes] == 1 ? 1 : 0;
+        env->terminals[0] = env->actions[2 * env->n_row_boxes] == 1 ? 1 : 0;
 
     if (env->terminals[0])
     {
@@ -556,13 +564,18 @@ void c_step(TableOCR* env)
         env->rewards[0] += r_comp;
         env->returns[0] += r_comp;
 
-        env->log.perf += (env->max_rps > 0) ? (float)env->rps / env->max_rps : 0.0f;
+        env->log.perf += env->perf_num / (float)env->perf_den;
         env->log.score += env->returns[0];
         env->log.episode_return += env->returns[0];
-        env->log.episode_length += (float)env->tick;
-        env->log.n_deleted += (float)env->num_deleted;
-        env->log.n_good_rows += (float)env->n_good_rows;
-        env->log.init_clustered += (float)env->init_clustered;
+        env->log.episode_length += env->tick;
+        env->log.n_deleted_rows += env->num_deleted;
+        env->log.n_good_rows += env->n_good_rows;
+        env->log.init_good_rows += env->init_good_rows;
+        env->log.init_perf += env->init_perf;
+        env->log.n_good_words += env->n_good_words;
+        env->log.word_perf += env->word_perf_num / (float)env->word_perf_den;
+        env->log.init_good_words += env->init_good_words;
+        env->log.init_word_perf += env->init_word_perf;
         env->log.n++;
 
         c_reset(env);
@@ -662,8 +675,8 @@ void c_render(TableOCR *env)
                     base * env->client->zoom,
                     WHITE);
 
-    for (int i = 0; i < env->n_cell_boxes; ++i) {
-        Rectangle r = scale_rect(&env->state_pos[2 * i],
+    for (int i = 0; i < env->n_row_boxes; ++i) {
+        Rectangle r = scale_rect(&env->row_state[2 * i],
                                     (float)env->img_width,
                                     base * env->client->zoom,
                                     (int)env->client->offset.x,
@@ -679,17 +692,15 @@ void c_render(TableOCR *env)
     snprintf(fname, sizeof fname, "render++_%06d.png", env->tick);
     TakeScreenshot(fname);
 
-    if (env->terminals[0]) {
-        printf("Episode ended: %d steps, rps = %d/%d\n",
-               env->tick, env->rps, env->max_rps);
-        printf("Perf: %.3f, Score: %.3f, Return: %.3f, Length: %.3f\n",
-               env->log.perf, env->log.score,
-               env->log.episode_return, env->log.episode_length);
-    }
+    // if (env->terminals[0]) {
+    //     printf("Episode ended: %d steps, rps = %d/%d\n",
+    //            env->tick, env->rps, env->max_rps);
+    //     printf("Perf: %.3f, Score: %.3f, Return: %.3f, Length: %.3f\n",
+    //            env->log.perf, env->log.score,
+    //            env->log.episode_return, env->log.episode_length);
+    // }
 }
 
-// Required function. Should clean up anything you allocated
-// Do not free env->observations, actions, rewards, terminals
 void c_close(TableOCR *env)
 {
     if (env->client != NULL) {

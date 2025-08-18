@@ -22,15 +22,11 @@ int main()
         .img_height = 1200,
         .img_width = 2200,
 
-        .r_text_const_1 = 0.4f,
-
         .min_steps = 10,
         .max_steps = 1000,
 
         .stable_r_coeff = 0.1f,
-        .done_r_coeff = 1.0f,
 
-        .epsilon_cell = 5.0f,
         .epsilon_del = 10.0f
     };
 
@@ -45,12 +41,12 @@ int main()
     
     while (i < 400000)
     {
-        for (int j = 0; j < 2 * env.n_cell_boxes; ++j)
+        for (int j = 0; j < 2 * env.n_row_boxes; ++j)
         {
             env.actions[j] = rand() % 3;
         }
 
-        env.actions[2 * env.n_cell_boxes] = rand() % 2;
+        env.actions[2 * env.n_row_boxes] = rand() % 2;
 
         c_step(&env);
         // c_render(&env);

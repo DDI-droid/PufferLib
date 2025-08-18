@@ -21,20 +21,19 @@ class TableOCR(pufferlib.PufferEnv):
         render_mode='auto',
         log_interval=10,
         log_episodes=10,
-        n_cell_boxes=46,
+        n_row_boxes=46,
         d_position=5,
         img_height=7015,
         img_width=4962,
         min_steps=4,
         max_steps=50,
         stable_r_coeff=0.07,
-        epsilon_cell=0.1,
         epsilon_del=0.1,
         buf=None,
         seed=0
     ):
 
-        n_cell_boxes = int(n_cell_boxes)
+        n_row_boxes = int(n_row_boxes)
         img_height = int(img_height)
         img_width = int(img_width)
         min_steps = int(min_steps)
@@ -43,11 +42,11 @@ class TableOCR(pufferlib.PufferEnv):
         log_episodes = int(log_episodes)
         num_envs = int(num_envs)
 
-        self.n_cell_boxes = n_cell_boxes
+        self.n_row_boxes = n_row_boxes
 
-        self.n_observations = 2 * self.n_cell_boxes
+        self.n_observations = 2 * self.n_row_boxes
 
-        self.n_boxes_action = 2 * self.n_cell_boxes
+        self.n_boxes_action = 2 * self.n_row_boxes
         self.n_halt_action = 1
 
         self.single_observation_space = gymnasium.spaces.Box(low=-1, high=img_height,
@@ -80,7 +79,6 @@ class TableOCR(pufferlib.PufferEnv):
             min_steps=min_steps,
             max_steps=max_steps,
             stable_r_coeff=stable_r_coeff,
-            epsilon_cell=epsilon_cell,
             epsilon_del=epsilon_del
         )
 
